@@ -1,0 +1,290 @@
+// Prisma Schema for Khata Management System
+// Generator configuration for Prisma v7
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+// Supabase PostgreSQL Datasource
+datasource db {
+  provider = "postgresql"
+}
+
+// ==========================================
+// Enums
+// ==========================================
+
+// ইউজার রোল (RBAC)
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+}
+
+// খাতার স্ট্যাটাস
+enum KhataStatus {
+  DISTRIBUTED           // লেখকদের মাঝে বিতরণ করা হয়েছে
+  PARTIALLY_SUBMITTED   // আংশিক জমা হয়েছে
+  COMPLETED             // সম্পূর্ণ কাজ শেষ ও জমা হয়েছে
+}
+
+// পেমেন্ট স্ট্যাটাস
+enum PaymentStatus {
+  PAID                  // সম্পূর্ণ পরিশোধিত
+  PARTIAL               // আংশিক পরিশোধিত
+  DUE                   // সম্পূর্ণ বাকি
+}
+
+// স্টক মুভমেন্টের ধরন (Movement Log Pattern)
+enum StockMovementType {
+  RECEIVED              // কেন্দ্রীয় সাপ্লাই বা প্রিন্টিং থেকে ব্রাঞ্চে গ্রহণ
+  DISTRIBUTED           // লেখক বা সেন্টারে বিতরণ
+  RETURNED              // ফেরত আসা বা জমা হওয়া খাতা
+}
+
+// অর্ডার স্ট্যাটাস
+enum OrderStatus {
+  PENDING               // নতুন অর্ডার প্রাপ্ত
+  CONFIRMED             // অর্ডার নিশ্চিতকরণ হয়েছে
+  ASSIGNED              // ব্রাঞ্চ ও লেখক নির্ধারিত হয়েছে
+  IN_PROGRESS           // লেখকরা খাতা লিখছেন
+  WRITING               // ব্যাকওয়ার্ড কম্প্যাটিবিলিটির জন্য
+  READY                 // খাতা তৈরি ও প্রস্তুত
+  OUT_FOR_DELIVERY      // ডেলিভারির উদ্দেশ্যে বের হয়েছে
+  DELIVERED             // সফলভাবে ডেলিভারি সম্পন্ন ও ক্যাশ কালেকশন
+  CANCELLED             // বাতিলকৃত
+}
+
+// অর্ডার পেমেন্ট স্ট্যাটাস
+enum OrderPaymentStatus {
+  PENDING               // ক্যাশ অন ডেলিভারি বাকি
+  COLLECTED             // ক্যাশ কালেকশন সম্পন্ন
+}
+
+// ==========================================
+// Models
+// ==========================================
+
+// ১. User মডেল — সিস্টেম ব্যবহারকারী (অ্যাডমিন, ম্যানেজার ইত্যাদি)
+model User {
+  id           String     @id @default(uuid())
+  name         String
+  email        String     @unique
+  password     String     // Hashed password (e.g. bcrypt/argon2)
+  role         Role       @default(MANAGER)
+  isActive     Boolean    @default(true)
+  auditLogs    AuditLog[]
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([role])
+  @@index([isActive])
+  @@map("users")
+}
+
+// ২. Branch মডেল — শাখা ব্যবস্থাপনা (One-to-many: Writers, Stocks, Khatas)
+model Branch {
+  id        String    @id @default(uuid())
+  name      String
+  address   String?
+  phone     String?
+  isActive  Boolean   @default(true)
+  writers   Writer[]
+  stocks    Stock[]
+  khatas    Khata[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([name])
+  @@index([isActive])
+  @@map("branches")
+}
+
+// ৩. Writer মডেল — খাতা লেখার কাজে নিয়োজিত ব্যক্তি/লেখক
+model Writer {
+  id           String    @id @default(uuid())
+  name         String
+  phone        String
+  email        String?
+  district       String    @default("Dhaka") // লেখকের জেলা (যেমন: "Khulna", "Comilla", "Rajshahi")
+  branchId       String
+  branch         Branch    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  ratePerKhata   Decimal   @db.Decimal(10, 2) // প্রতি খাতা লেখার নির্ধারিত রেট
+  isActive       Boolean   @default(true)
+  khatas         Khata[]
+  payments       Payment[]
+  preferredOrders Order[]  @relation("PreferredWriterOrders")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([branchId])
+  @@index([phone])
+  @@index([district])
+  @@index([isActive])
+  @@map("writers")
+}
+
+// ৪. Khata মডেল — নির্দিষ্ট ব্যাচ ও লেখকের খাতার হিসাব
+model Khata {
+  id            String        @id @default(uuid())
+  batchNumber   String        // ব্যাচ নম্বর বা নাম (যেমন: BATCH-2026-01)
+  branchId      String
+  branch        Branch        @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  writerId      String
+  writer        Writer        @relation(fields: [writerId], references: [id], onDelete: Restrict)
+  receivedQty   Int           // লেখককে বিতরণকৃত/গ্রহণকৃত খাতার সংখ্যা
+  submittedQty  Int           @default(0) // লেখক কতগুলো জমা দিয়েছেন
+  // pendingQty = receivedQty - submittedQty (এটি অ্যাপ্লিকেশন লজিকে ক্যালকুলেট করা হবে)
+  status        KhataStatus   @default(DISTRIBUTED)
+  distributedAt DateTime      @default(now())
+  submittedAt   DateTime?
+  payments      Payment[]     // খাতার সাথে সরাসরি যুক্ত পেমেন্ট
+  paymentItems  PaymentItem[] // মাল্টি-খাতা স্প্লিট পেমেন্ট আইটেম (Best Practice)
+  orderId       String?       // যে স্টুডেন্ট অর্ডারের অধীনে এই খাতা তৈরি হয়েছে
+  order         Order?        @relation("OrderKhataAssignments", fields: [orderId], references: [id], onDelete: SetNull)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([branchId])
+  @@index([writerId])
+  @@index([batchNumber])
+  @@index([status])
+  @@index([orderId])
+  @@index([distributedAt])
+  @@index([branchId, status])
+  @@index([writerId, status])
+  @@map("khatas")
+}
+
+// ৫. Payment মডেল — লেখকদের পারিশ্রমিক/বিল ও লেনদেনের হিসাব
+model Payment {
+  id           String        @id @default(uuid())
+  writerId     String
+  writer       Writer        @relation(fields: [writerId], references: [id], onDelete: Restrict)
+  khataId      String?       // সিঙ্গেল খাতার পেমেন্ট হলে সরাসরি লিংক (ঐচ্ছিক)
+  khata        Khata?        @relation(fields: [khataId], references: [id], onDelete: SetNull)
+  amount       Decimal       @db.Decimal(10, 2) // মোট বিল বা নির্ধারণকৃত প্রদেয় পরিমাণ
+  paidAmount   Decimal       @default(0.00) @db.Decimal(10, 2) // কত টাকা পরিশোধ করা হয়েছে
+  dueAmount    Decimal       @db.Decimal(10, 2) // বাকি পরিমাণ (amount - paidAmount)
+  status       PaymentStatus @default(DUE)
+  paymentDate  DateTime      @default(now())
+  paymentItems PaymentItem[] // একটি পেমেন্ট একাধিক খাতায় বণ্টন হলে তার ব্রেকডাউন (Optional Junction)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([writerId])
+  @@index([khataId])
+  @@index([status])
+  @@index([paymentDate])
+  @@index([writerId, status])
+  @@map("payments")
+}
+
+// ৫.১ PaymentItem (Junction মডেল) — একটি পেমেন্ট দিয়ে একাধিক খাতার বিল পরিশোধ করার বেস্ট প্র্যাক্টিস
+model PaymentItem {
+  id        String   @id @default(uuid())
+  paymentId String
+  payment   Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  khataId   String
+  khata     Khata    @relation(fields: [khataId], references: [id], onDelete: Restrict)
+  amount    Decimal  @db.Decimal(10, 2) // এই নির্দিষ্ট খাতার জন্য কত টাকা দেওয়া হলো
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([paymentId])
+  @@index([khataId])
+  @@map("payment_items")
+}
+
+// ৬. Stock মডেল — ব্রাঞ্চভিত্তিক খাতার ইনভেন্টরি ও মুভমেন্ট লেজার (Movement Log Pattern)
+model Stock {
+  id             String            @id @default(uuid())
+  branchId       String
+  branch         Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  type           StockMovementType @default(RECEIVED)
+  quantity       Int               @default(0) // এই নির্দিষ্ট লেনদেনে কত খাতা মুভ হলো
+  receivedQty    Int               @default(0) // কিউমুলেটিভ মোট প্রাপ্ত খাতা
+  distributedQty Int               @default(0) // কিউমুলেটিভ মোট বিতরণকৃত খাতা
+  returnedQty    Int               @default(0) // কিউমুলেটিভ মোট ফেরত আসা খাতা
+  currentQty     Int               @default(0) // এই লেনদেনের পর শাখায় মোট মজুত (Running Balance)
+  note           String?           // মন্তব্য বা চালানের তথ্য
+  recordDate     DateTime          @default(now())
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([branchId])
+  @@index([type])
+  @@index([recordDate])
+  @@index([branchId, recordDate])
+  @@map("stocks")
+}
+
+// ৭. AuditLog মডেল — সিস্টেমের গুরুত্বপূর্ণ পরিবর্তনের হিস্টোরি ট্র্যাকিং
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?  // ইউজার মুছে গেলেও অডিট লগ সুরক্ষিত রাখতে nullable
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String   // যেমন: "CREATE_BRANCH", "UPDATE_PAYMENT", "SUBMIT_KHATA"
+  entityType String   // যেমন: "Branch", "Writer", "Khata", "Payment", "Stock"
+  entityId   String   // প্রভাবিত রেকর্ডের ID
+  details    Json?    // পরিবর্তন সংক্রান্ত পূর্বের ও বর্তমান তথ্য (JSON ফরম্যাটে)
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ৮. SubjectPricing মডেল — বিভিন্ন শ্রেণি ও বিষয়ের খাতার নির্ধারিত মূল্য তালিকা
+model SubjectPricing {
+  id            String   @id @default(uuid())
+  subjectName   String   // বিষয় (যেমন: "Physics", "Chemistry", "Biology")
+  className     String   // শ্রেণি (যেমন: "SSC", "HSC", "JSC")
+  pricePerKhata Decimal  @db.Decimal(10, 2) // প্রতি খাতার নির্ধারিত মূল্য
+  isActive      Boolean  @default(true)
+  orders        Order[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([subjectName, className])
+  @@index([className])
+  @@index([isActive])
+  @@map("subject_pricings")
+}
+
+// ৯. Order মডেল — পাবলিক B2C শিক্ষার্থীদের প্র্যাকটিক্যাল খাতার অর্ডার (মাল্টি-রাইটার স্প্লিট অ্যাসাইনমেন্ট সহ)
+model Order {
+  id                 String             @id @default(uuid())
+  orderNumber        String             @unique // যেমন: "ORD-2026-0001"
+  customerName       String
+  customerPhone      String
+  customerAddress    String
+  subjectPricingId   String
+  subjectPricing     SubjectPricing     @relation(fields: [subjectPricingId], references: [id], onDelete: Restrict)
+  quantity           Int                // মোট খাতার সংখ্যা (যেমন: ১০০)
+  unitPrice          Decimal            @db.Decimal(10, 2) // অর্ডারের সময় নির্ধারিত মূল্যের স্ন্যাপশট
+  totalAmount        Decimal            @db.Decimal(10, 2) // মোট প্রদেয় মূল্য (quantity * unitPrice)
+  preferredDistrict  String?            // স্টুডেন্টের পছন্দের জেলা (যেমন: "Khulna")
+  preferredWriterId  String?            // স্টুডেন্টের নির্দিষ্ট পছন্দের লেখক (ঐচ্ছিক)
+  preferredWriter    Writer?            @relation("PreferredWriterOrders", fields: [preferredWriterId], references: [id], onDelete: SetNull)
+  status             OrderStatus        @default(PENDING)
+  paymentStatus      OrderPaymentStatus @default(PENDING)
+  deliveryPersonName String?            // নিজস্ব ডেলিভারি কর্মীর নাম
+  cancelReason       String?            // অর্ডার বাতিলের কারণ
+  orderDate          DateTime           @default(now())
+  confirmedAt        DateTime?
+  assignedAt         DateTime?
+  deliveredAt        DateTime?
+  khataAssignments   Khata[]            @relation("OrderKhataAssignments") // একাধিক রাইটারের মধ্যে খাতা ভাগ করে দেওয়া (One-to-many)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([customerPhone])
+  @@index([preferredDistrict])
+  @@index([orderDate])
+  @@map("orders")
+}
