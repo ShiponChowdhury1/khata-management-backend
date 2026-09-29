@@ -1,5 +1,8 @@
 import { Router } from 'express';
 import authRoutes from '../modules/auth/auth.routes.js';
+import userRoutes from '../modules/user/user.routes.js';
+import classRoutes from '../modules/class/class.routes.js';
+import subjectRoutes from '../modules/subject/subject.routes.js';
 import branchRoutes from '../modules/branch/branch.routes.js';
 import writerRoutes from '../modules/writer/writer.routes.js';
 import khataRoutes from '../modules/khata/khata.routes.js';
@@ -23,6 +26,9 @@ rootRouter.use('/public', publicOrderRoutes);
 
 // ফিচার মডিউল রুটস (প্রটেক্টেড)
 rootRouter.use('/auth', authRoutes);
+rootRouter.use('/users', userRoutes);
+rootRouter.use('/classes', classRoutes);
+rootRouter.use('/subjects', subjectRoutes);
 rootRouter.use('/branches', branchRoutes);
 rootRouter.use('/writers', writerRoutes);
 rootRouter.use('/khatas', khataRoutes);

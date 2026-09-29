@@ -1,5 +1,6 @@
 import { prisma } from '../../lib/prisma.js';
 import { ApiError } from '../../utils/apiError.js';
+import { formatMoneyString } from '../../utils/money.js';
 import type { Prisma, KhataStatus } from '../../../generated/prisma/client.js';
 import type {
   CreateKhataDto,
@@ -14,7 +15,7 @@ import type {
  */
 export class KhataService {
   /**
-   * নতুন খাতা/ব্যাচ তৈরি করা
+   * নতুন খাতা/ব্যাচ তৈরি করা (Atomic Transaction সহ)
    */
   static async createKhata(dto: CreateKhataDto, userId: string) {
     // ১. ব্রাঞ্চ আইডি ভ্যালিড এবং সক্রিয় কি না যাচাই
@@ -58,42 +59,48 @@ export class KhataService {
       throw ApiError.conflict(`Khata with batch number '${dto.batchNumber}' already exists`);
     }
 
-    // ৪. ডেটাবেজে খাতা তৈরি
-    const khata = await prisma.khata.create({
-      data: {
-        batchNumber: dto.batchNumber.trim(),
-        branchId: dto.branchId,
-        writerId: dto.writerId,
-        receivedQty: dto.receivedQty,
-        submittedQty: 0,
-        status: 'DISTRIBUTED',
-      },
-      include: {
-        branch: { select: { id: true, name: true } },
-        writer: { select: { id: true, name: true, phone: true, ratePerKhata: true } },
-      },
-    });
-
-    // ৫. অডিট লগ তৈরি
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'CREATE_KHATA',
-        entityType: 'Khata',
-        entityId: khata.id,
-        details: {
-          batchNumber: khata.batchNumber,
-          branchId: khata.branchId,
-          writerId: khata.writerId,
-          receivedQty: khata.receivedQty,
+    // ৪. ডেটাবেজে ট্রানজ্যাকশনে খাতা তৈরি ও অডিট লগ
+    return await prisma.$transaction(async (tx) => {
+      const khata = await tx.khata.create({
+        data: {
+          batchNumber: dto.batchNumber.trim(),
+          branchId: dto.branchId,
+          writerId: dto.writerId,
+          receivedQty: dto.receivedQty,
+          submittedQty: 0,
+          status: 'DISTRIBUTED',
         },
-      },
-    });
+        include: {
+          branch: { select: { id: true, name: true } },
+          writer: { select: { id: true, name: true, phone: true, ratePerKhata: true } },
+        },
+      });
 
-    return {
-      ...khata,
-      pendingQty: khata.receivedQty,
-    };
+      // অডিট লগ তৈরি (একই ট্রানজ্যাকশনে)
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'CREATE_KHATA',
+          entityType: 'Khata',
+          entityId: khata.id,
+          details: {
+            batchNumber: khata.batchNumber,
+            branchId: khata.branchId,
+            writerId: khata.writerId,
+            receivedQty: khata.receivedQty,
+          },
+        },
+      });
+
+      return {
+        ...khata,
+        writer: {
+          ...khata.writer,
+          ratePerKhata: formatMoneyString(khata.writer.ratePerKhata),
+        },
+        pendingQty: khata.receivedQty,
+      };
+    });
   }
 
   /**
@@ -133,9 +140,13 @@ export class KhataService {
       }),
     ]);
 
-    // প্রতিটি খাতায় pendingQty কম্পিউট করে পাঠানো
+    // প্রতিটি খাতায় pendingQty কম্পিউট করে পাঠানো এবং Decimal স্ট্রিং ফরম্যাটিং
     const khatas = rawKhatas.map((k) => ({
       ...k,
+      writer: {
+        ...k.writer,
+        ratePerKhata: formatMoneyString(k.writer.ratePerKhata),
+      },
       pendingQty: Math.max(0, k.receivedQty - k.submittedQty),
     }));
 
@@ -184,12 +195,33 @@ export class KhataService {
 
     return {
       ...khata,
+      writer: {
+        ...khata.writer,
+        ratePerKhata: formatMoneyString(khata.writer.ratePerKhata),
+      },
+      payments: khata.payments.map((p) => ({
+        ...p,
+        amount: formatMoneyString(p.amount),
+        paidAmount: formatMoneyString(p.paidAmount),
+        dueAmount: formatMoneyString(p.dueAmount),
+      })),
+      paymentItems: khata.paymentItems.map((item) => ({
+        ...item,
+        amount: formatMoneyString(item.amount),
+        payment: item.payment
+          ? {
+              ...item.payment,
+              amount: formatMoneyString(item.payment.amount),
+              paidAmount: formatMoneyString(item.payment.paidAmount),
+            }
+          : undefined,
+      })),
       pendingQty: Math.max(0, khata.receivedQty - khata.submittedQty),
     };
   }
 
   /**
-   * খাতা জমা দেওয়ার মূল বিজনেস লজিক (ইন্টারনাল সাবমিশন)
+   * খাতা জমা দেওয়ার মূল বিজনেস লজিক (Atomic Transaction সহ)
    */
   static async submitKhata(id: string, dto: SubmitKhataDto, userId: string) {
     const khata = await prisma.khata.findUnique({
@@ -220,47 +252,54 @@ export class KhataService {
     const isCompleted = newSubmittedQty === khata.receivedQty;
     const newStatus: KhataStatus = isCompleted ? 'COMPLETED' : 'PARTIALLY_SUBMITTED';
 
-    const updatedKhata = await prisma.khata.update({
-      where: { id },
-      data: {
-        submittedQty: newSubmittedQty,
-        status: newStatus,
-        submittedAt: isCompleted ? new Date() : khata.submittedAt,
-      },
-      include: {
-        branch: { select: { id: true, name: true } },
-        writer: { select: { id: true, name: true, phone: true } },
-      },
-    });
-
-    // অডিট লগ সংরক্ষণ
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'SUBMIT_KHATA',
-        entityType: 'Khata',
-        entityId: id,
-        details: {
-          batchNumber: khata.batchNumber,
-          previousSubmittedQty: khata.submittedQty,
-          submittedNow: dto.submittedQty,
-          newSubmittedQty,
-          remainingPendingQty: khata.receivedQty - newSubmittedQty,
-          previousStatus: khata.status,
-          newStatus,
-          isCompleted,
+    // ট্রানজ্যাকশনে আপডেট ও অডিট লগ
+    return await prisma.$transaction(async (tx) => {
+      const updatedKhata = await tx.khata.update({
+        where: { id },
+        data: {
+          submittedQty: newSubmittedQty,
+          status: newStatus,
+          submittedAt: isCompleted ? new Date() : khata.submittedAt,
         },
-      },
-    });
+        include: {
+          branch: { select: { id: true, name: true } },
+          writer: { select: { id: true, name: true, phone: true, ratePerKhata: true } },
+        },
+      });
 
-    return {
-      ...updatedKhata,
-      pendingQty: Math.max(0, updatedKhata.receivedQty - updatedKhata.submittedQty),
-    };
+      // অডিট লগ সংরক্ষণ
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'SUBMIT_KHATA',
+          entityType: 'Khata',
+          entityId: id,
+          details: {
+            batchNumber: khata.batchNumber,
+            previousSubmittedQty: khata.submittedQty,
+            submittedNow: dto.submittedQty,
+            newSubmittedQty,
+            remainingPendingQty: khata.receivedQty - newSubmittedQty,
+            previousStatus: khata.status,
+            newStatus,
+            isCompleted,
+          },
+        },
+      });
+
+      return {
+        ...updatedKhata,
+        writer: {
+          ...updatedKhata.writer,
+          ratePerKhata: formatMoneyString(updatedKhata.writer.ratePerKhata),
+        },
+        pendingQty: Math.max(0, updatedKhata.receivedQty - updatedKhata.submittedQty),
+      };
+    });
   }
 
   /**
-   * খাতা তথ্য আপডেট (batchNumber বা receivedQty)
+   * খাতা তথ্য আপডেট (batchNumber বা receivedQty) - Atomic Transaction সহ
    */
   static async updateKhata(id: string, dto: UpdateKhataDto, userId: string) {
     const khata = await prisma.khata.findUnique({
@@ -294,46 +333,52 @@ export class KhataService {
       }
     }
 
-    const updatedKhata = await prisma.khata.update({
-      where: { id },
-      data: {
-        batchNumber: dto.batchNumber?.trim(),
-        receivedQty: dto.receivedQty,
-      },
-      include: {
-        branch: { select: { id: true, name: true } },
-        writer: { select: { id: true, name: true } },
-      },
-    });
+    return await prisma.$transaction(async (tx) => {
+      const updatedKhata = await tx.khata.update({
+        where: { id },
+        data: {
+          batchNumber: dto.batchNumber?.trim(),
+          receivedQty: dto.receivedQty,
+        },
+        include: {
+          branch: { select: { id: true, name: true } },
+          writer: { select: { id: true, name: true, ratePerKhata: true } },
+        },
+      });
 
-    // অডিট লগ
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'UPDATE_KHATA',
-        entityType: 'Khata',
-        entityId: id,
-        details: {
-          before: {
-            batchNumber: khata.batchNumber,
-            receivedQty: khata.receivedQty,
-          },
-          after: {
-            batchNumber: updatedKhata.batchNumber,
-            receivedQty: updatedKhata.receivedQty,
+      // অডিট লগ
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'UPDATE_KHATA',
+          entityType: 'Khata',
+          entityId: id,
+          details: {
+            before: {
+              batchNumber: khata.batchNumber,
+              receivedQty: khata.receivedQty,
+            },
+            after: {
+              batchNumber: updatedKhata.batchNumber,
+              receivedQty: updatedKhata.receivedQty,
+            },
           },
         },
-      },
-    });
+      });
 
-    return {
-      ...updatedKhata,
-      pendingQty: Math.max(0, updatedKhata.receivedQty - updatedKhata.submittedQty),
-    };
+      return {
+        ...updatedKhata,
+        writer: {
+          ...updatedKhata.writer,
+          ratePerKhata: formatMoneyString(updatedKhata.writer.ratePerKhata),
+        },
+        pendingQty: Math.max(0, updatedKhata.receivedQty - updatedKhata.submittedQty),
+      };
+    });
   }
 
   /**
-   * খাতা ডিলিট করা (শুধুমাত্র যদি submittedQty === 0 হয়)
+   * খাতা ডিলিট করা (Atomic Transaction সহ)
    */
   static async deleteKhata(id: string, userId: string) {
     const khata = await prisma.khata.findUnique({
@@ -363,26 +408,28 @@ export class KhataService {
       );
     }
 
-    await prisma.khata.delete({
-      where: { id },
-    });
+    return await prisma.$transaction(async (tx) => {
+      await tx.khata.delete({
+        where: { id },
+      });
 
-    // অডিট লগ
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'DELETE_KHATA',
-        entityType: 'Khata',
-        entityId: id,
-        details: {
-          deletedBatchNumber: khata.batchNumber,
-          receivedQty: khata.receivedQty,
-          deletedAt: new Date().toISOString(),
+      // অডিট লগ
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'DELETE_KHATA',
+          entityType: 'Khata',
+          entityId: id,
+          details: {
+            deletedBatchNumber: khata.batchNumber,
+            receivedQty: khata.receivedQty,
+            deletedAt: new Date().toISOString(),
+          },
         },
-      },
-    });
+      });
 
-    return { id, batchNumber: khata.batchNumber };
+      return { id, batchNumber: khata.batchNumber };
+    });
   }
 
   /**

@@ -9,6 +9,8 @@ import {
   getPaymentReport,
   getDueReport,
   getStockReport,
+  getOrderReport,
+  getProfitSummary,
 } from './report.controller.js';
 import { authenticate } from '../../middlewares/auth.middleware.js';
 import { allowedRoles } from '../../middlewares/rbac.middleware.js';
@@ -22,6 +24,8 @@ import {
   paymentReportQuerySchema,
   dueReportQuerySchema,
   stockReportQuerySchema,
+  orderReportQuerySchema,
+  profitSummaryQuerySchema,
 } from './report.types.js';
 
 const router = Router();
@@ -137,6 +141,30 @@ router.get(
   reportRoles,
   validate({ query: stockReportQuerySchema }),
   getStockReport
+);
+
+/**
+ * @route   GET /api/reports/order-report
+ * @desc    তারিখ/status/branch/জেলা ফিল্টার ও পেজিনেশনসহ অর্ডার তালিকা ও সামারি
+ * @access  Private (SUPER_ADMIN, ADMIN, MANAGER)
+ */
+router.get(
+  '/order-report',
+  reportRoles,
+  validate({ query: orderReportQuerySchema }),
+  getOrderReport
+);
+
+/**
+ * @route   GET /api/reports/profit-summary
+ * @desc    তারিখ রেঞ্জে আয়, Writer-দের মোট পারিশ্রমিক ও নেট লাভ সামারি
+ * @access  Private (SUPER_ADMIN, ADMIN, MANAGER)
+ */
+router.get(
+  '/profit-summary',
+  reportRoles,
+  validate({ query: profitSummaryQuerySchema }),
+  getProfitSummary
 );
 
 export default router;

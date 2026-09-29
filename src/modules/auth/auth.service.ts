@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../../lib/prisma.js';
 import { env } from '../../config/env.js';
 import { ApiError } from '../../utils/apiError.js';
-import { generateAccessToken, generateRefreshToken } from '../../utils/jwt.js';
+import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from '../../utils/jwt.js';
 import type { RegisterDto, LoginDto, AuthResponseData } from './auth.types.js';
 
 /**
@@ -10,9 +10,9 @@ import type { RegisterDto, LoginDto, AuthResponseData } from './auth.types.js';
  */
 export class AuthService {
   /**
-   * নতুন ইউজার রেজিস্ট্রেশন
+   * নতুন ইউজার রেজিস্ট্রেশন (শুধু SUPER_ADMIN করতে পারবেন)
    */
-  static async register(dto: RegisterDto): Promise<AuthResponseData> {
+  static async register(dto: RegisterDto, creatorUserId?: string): Promise<AuthResponseData> {
     const existingUser = await prisma.user.findUnique({
       where: { email: dto.email.toLowerCase() },
     });
@@ -24,21 +24,41 @@ export class AuthService {
     // পাসওয়ার্ড হ্যাশিং
     const hashedPassword = await bcrypt.hash(dto.password, env.BCRYPT_SALT_ROUNDS);
 
-    // ডেটাবেজে ইউজার সংরক্ষণ
-    const user = await prisma.user.create({
-      data: {
-        name: dto.name,
-        email: dto.email.toLowerCase(),
-        password: hashedPassword,
-        role: dto.role || 'MANAGER',
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        isActive: true,
-      },
+    // ডেটাবেজে ইউজার ও অডিট লগ সংরক্ষণ
+    const user = await prisma.$transaction(async (tx) => {
+      const createdUser = await tx.user.create({
+        data: {
+          name: dto.name.trim(),
+          email: dto.email.toLowerCase().trim(),
+          password: hashedPassword,
+          role: dto.role || 'MANAGER',
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          isActive: true,
+        },
+      });
+
+      if (creatorUserId) {
+        await tx.auditLog.create({
+          data: {
+            userId: creatorUserId,
+            action: 'REGISTER_USER',
+            entityType: 'User',
+            entityId: createdUser.id,
+            details: {
+              name: createdUser.name,
+              email: createdUser.email,
+              role: createdUser.role,
+            },
+          },
+        });
+      }
+
+      return createdUser;
     });
 
     // টোকেন জেনারেশন
@@ -96,6 +116,49 @@ export class AuthService {
       },
       accessToken,
       refreshToken,
+    };
+  }
+
+  /**
+   * রিফ্রেশ টোকেন দিয়ে নতুন এক্সেস টোকেন ইস্যু করা
+   */
+  static async refreshAccessToken(refreshTokenStr: string) {
+    let decoded: { userId: string };
+    try {
+      decoded = verifyRefreshToken(refreshTokenStr);
+    } catch {
+      throw ApiError.unauthorized('Invalid or expired refresh token');
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        isActive: true,
+      },
+    });
+
+    if (!user) {
+      throw ApiError.unauthorized('User not found');
+    }
+
+    if (!user.isActive) {
+      throw ApiError.unauthorized('Your account has been deactivated. Please contact an administrator.');
+    }
+
+    const newAccessToken = generateAccessToken({
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      name: user.name,
+    });
+
+    return {
+      accessToken: newAccessToken,
+      user,
     };
   }
 

@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import {
+  getPublicClasses,
   getPublicSubjectPricings,
   getPublicWritersByDistrict,
   createPublicOrder,
   trackPublicOrder,
   getAllOrders,
   getOrderById,
+  suggestWriters,
   confirmOrder,
   assignOrder,
   updateOrderStatus,
@@ -23,6 +25,7 @@ import { validate } from '../../middlewares/validate.middleware.js';
 import {
   createSubjectPricingSchema,
   updateSubjectPricingSchema,
+  publicSubjectPricingQuerySchema,
   writersByDistrictQuerySchema,
   createPublicOrderSchema,
   trackOrderQuerySchema,
@@ -53,11 +56,22 @@ const publicOrderLimiter = rateLimit({
 });
 
 /**
- * @route   GET /api/public/subject-pricing
- * @desc    সব সক্রিয় বিষয় ও ক্লাসের প্র্যাকটিক্যাল খাতার ফি তালিকা
+ * @route   GET /api/public/classes
+ * @desc    পাবলিক সক্রিয় শ্রেণি/ক্লাস তালিকা (displayOrder অনুযায়ী)
  * @access  Public
  */
-publicRouter.get('/subject-pricing', getPublicSubjectPricings);
+publicRouter.get('/classes', getPublicClasses);
+
+/**
+ * @route   GET /api/public/subject-pricing
+ * @desc    সব সক্রিয় বিষয় ও ক্লাসের প্র্যাকটিক্যাল খাতার ফি তালিকা (ঐচ্ছিক classId ফিল্টার সহ)
+ * @access  Public
+ */
+publicRouter.get(
+  '/subject-pricing',
+  validate({ query: publicSubjectPricingQuerySchema }),
+  getPublicSubjectPricings
+);
 
 /**
  * @route   GET /api/public/writers-by-district
@@ -122,6 +136,18 @@ adminOrderRouter.get(
   allowedRoles('SUPER_ADMIN', 'ADMIN', 'MANAGER'),
   validate({ params: orderIdParamSchema }),
   getOrderById
+);
+
+/**
+ * @route   GET /api/orders/:id/suggest-writers
+ * @desc    অর্ডারের জেলা অনুযায়ী সক্রিয় রাইটারদের কাজের চাপ (Workload) সহ সাজেশন
+ * @access  Private (SUPER_ADMIN, ADMIN)
+ */
+adminOrderRouter.get(
+  '/:id/suggest-writers',
+  allowedRoles('SUPER_ADMIN', 'ADMIN'),
+  validate({ params: orderIdParamSchema }),
+  suggestWriters
 );
 
 /**

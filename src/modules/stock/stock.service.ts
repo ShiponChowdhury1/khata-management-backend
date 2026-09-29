@@ -1,6 +1,5 @@
-import { prisma } from '../../lib/prisma.js';
+import { prisma, Prisma } from '../../lib/prisma.js';
 import { ApiError } from '../../utils/apiError.js';
-import type { Prisma } from '../../../generated/prisma/client.js';
 import type {
   StockMovementDto,
   StockHistoryQueryDto,
@@ -64,7 +63,7 @@ export class StockService {
         },
       });
 
-      // অডিট লগ সংরক্ষণ
+      // অডিট লগ সংরক্ষণ (একই ট্রানজ্যাকশনে tx দিয়ে)
       await tx.auditLog.create({
         data: {
           userId,
@@ -88,7 +87,11 @@ export class StockService {
   }
 
   /**
-   * ২. ব্রাঞ্চ থেকে খাতা বিতরণ করা (Distribute Stock - Manual / Allocation)
+   * ২. ব্রাঞ্চ থেকে খাতা বিতরণ করা (Distribute Stock)
+   * রুল:
+   * - Serializable আইসোলেশন লেভেল
+   * - P2034 (serialization failure) হলে সর্বোচ্চ ৩ বার রিট্রাই
+   * - নেগেটিভ স্টক প্রতিরোধ গার্ড
    */
   static async distributeStock(dto: StockMovementDto, userId: string) {
     const branch = await prisma.branch.findUnique({
@@ -103,64 +106,82 @@ export class StockService {
       throw ApiError.badRequest(`Cannot distribute stock from inactive branch '${branch.name}'`);
     }
 
-    return await prisma.$transaction(async (tx) => {
-      const latest = await tx.stock.findFirst({
-        where: { branchId: dto.branchId },
-        orderBy: [{ recordDate: 'desc' }, { createdAt: 'desc' }],
-      });
+    const MAX_RETRIES = 3;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        return await prisma.$transaction(
+          async (tx) => {
+            const latest = await tx.stock.findFirst({
+              where: { branchId: dto.branchId },
+              orderBy: [{ recordDate: 'desc' }, { createdAt: 'desc' }],
+            });
 
-      const prevCurrent = latest ? latest.currentQty : 0;
-      const prevReceived = latest ? latest.receivedQty : 0;
-      const prevDistributed = latest ? latest.distributedQty : 0;
-      const prevReturned = latest ? latest.returnedQty : 0;
+            const prevCurrent = latest ? latest.currentQty : 0;
+            const prevReceived = latest ? latest.receivedQty : 0;
+            const prevDistributed = latest ? latest.distributedQty : 0;
+            const prevReturned = latest ? latest.returnedQty : 0;
 
-      // নেগেটিভ স্টক প্রতিরোধ ভ্যালিডেশন
-      if (prevCurrent < dto.quantity) {
-        throw ApiError.badRequest(
-          `Insufficient stock at branch '${branch.name}'. Available: ${prevCurrent}, Requested: ${dto.quantity}`
-        );
-      }
+            // নেগেটিভ স্টক প্রতিরোধ ভ্যালিডেশন
+            if (prevCurrent < dto.quantity) {
+              throw ApiError.badRequest(
+                `Insufficient stock at branch '${branch.name}'. Available: ${prevCurrent}, Requested: ${dto.quantity}`
+              );
+            }
 
-      const newCurrent = prevCurrent - dto.quantity;
-      const newDistributed = prevDistributed + dto.quantity;
+            const newCurrent = prevCurrent - dto.quantity;
+            const newDistributed = prevDistributed + dto.quantity;
 
-      const stock = await tx.stock.create({
-        data: {
-          branchId: dto.branchId,
-          type: 'DISTRIBUTED',
-          quantity: dto.quantity,
-          currentQty: newCurrent,
-          receivedQty: prevReceived,
-          distributedQty: newDistributed,
-          returnedQty: prevReturned,
-          note: dto.note?.trim() || null,
-          recordDate: dto.recordDate ? new Date(dto.recordDate) : new Date(),
-        },
-        include: {
-          branch: { select: { id: true, name: true, phone: true } },
-        },
-      });
+            const stock = await tx.stock.create({
+              data: {
+                branchId: dto.branchId,
+                type: 'DISTRIBUTED',
+                quantity: dto.quantity,
+                currentQty: newCurrent,
+                receivedQty: prevReceived,
+                distributedQty: newDistributed,
+                returnedQty: prevReturned,
+                note: dto.note?.trim() || null,
+                recordDate: dto.recordDate ? new Date(dto.recordDate) : new Date(),
+              },
+              include: {
+                branch: { select: { id: true, name: true, phone: true } },
+              },
+            });
 
-      await tx.auditLog.create({
-        data: {
-          userId,
-          action: 'STOCK_DISTRIBUTED',
-          entityType: 'Stock',
-          entityId: stock.id,
-          details: {
-            branchId: dto.branchId,
-            branchName: branch.name,
-            quantity: dto.quantity,
-            previousStock: prevCurrent,
-            currentStock: newCurrent,
-            totalDistributed: newDistributed,
-            note: dto.note?.trim() || null,
+            // অডিট লগ একই ট্রানজ্যাকশনে tx দিয়ে
+            await tx.auditLog.create({
+              data: {
+                userId,
+                action: 'STOCK_DISTRIBUTED',
+                entityType: 'Stock',
+                entityId: stock.id,
+                details: {
+                  branchId: dto.branchId,
+                  branchName: branch.name,
+                  quantity: dto.quantity,
+                  previousStock: prevCurrent,
+                  currentStock: newCurrent,
+                  totalDistributed: newDistributed,
+                  note: dto.note?.trim() || null,
+                },
+              },
+            });
+
+            return stock;
           },
-        },
-      });
-
-      return stock;
-    });
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          }
+        );
+      } catch (err: any) {
+        // Prisma error code P2034: Transaction failed due to a write conflict or deadlock
+        if (err?.code === 'P2034' && attempt < MAX_RETRIES) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 50));
+          continue;
+        }
+        throw err;
+      }
+    }
   }
 
   /**

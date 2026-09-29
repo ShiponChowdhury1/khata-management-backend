@@ -1,4 +1,5 @@
-import { prisma } from '../../lib/prisma.js';
+import { prisma, Decimal } from '../../lib/prisma.js';
+import { formatMoneyString } from '../../utils/money.js';
 import type { Prisma } from '../../../generated/prisma/client.js';
 import type {
   DashboardSummaryResponse,
@@ -12,6 +13,10 @@ import type {
   DueReportQueryDto,
   WriterDueReportItem,
   StockReportQueryDto,
+  OrderReportQueryDto,
+  OrderReportResponse,
+  ProfitSummaryQueryDto,
+  ProfitSummaryResponse,
 } from './report.types.js';
 
 /**
@@ -30,6 +35,7 @@ export class ReportService {
       khataAgg,
       paymentAgg,
       allBranches,
+      allOrders,
     ] = await Promise.all([
       prisma.branch.count(),
       prisma.branch.count({ where: { isActive: true } }),
@@ -60,19 +66,66 @@ export class ReportService {
           },
         },
       }),
+      // সমস্ত অর্ডারের স্ট্যাটাস ও রেভিনিউ মেট্রিক্স
+      prisma.order.findMany({
+        select: {
+          status: true,
+          paymentStatus: true,
+          totalAmount: true,
+        },
+      }),
     ]);
 
     const totalDistributedQty = khataAgg._sum.receivedQty || 0;
     const totalSubmittedQty = khataAgg._sum.submittedQty || 0;
     const totalPendingQty = Math.max(0, totalDistributedQty - totalSubmittedQty);
 
-    const totalPaymentAmount = Number(paymentAgg._sum.amount || 0);
-    const totalPaidAmount = Number(paymentAgg._sum.paidAmount || 0);
-    const totalDueAmount = Number(paymentAgg._sum.dueAmount || 0);
+    const totalPaymentAmount = formatMoneyString(paymentAgg._sum.amount);
+    const totalPaidAmount = formatMoneyString(paymentAgg._sum.paidAmount);
+    const totalDueAmount = formatMoneyString(paymentAgg._sum.dueAmount);
 
     const currentTotalStock = allBranches.reduce((sum, b) => {
       return sum + (b.stocks[0]?.currentQty || 0);
     }, 0);
+
+    // অর্ডার অ্যানালিটিক্স হিসাব
+    const ordersByStatus: Record<string, number> = {
+      PENDING: 0,
+      CONFIRMED: 0,
+      ASSIGNED: 0,
+      IN_PROGRESS: 0,
+      WRITING: 0,
+      READY: 0,
+      OUT_FOR_DELIVERY: 0,
+      DELIVERED: 0,
+      CANCELLED: 0,
+    };
+
+    let totalOrderRevenue = new Decimal(0);
+    let codCollected = new Decimal(0);
+    let codPending = new Decimal(0);
+    let pendingDeliveries = 0;
+
+    for (const o of allOrders) {
+      ordersByStatus[o.status] = (ordersByStatus[o.status] || 0) + 1;
+
+      if (o.status === 'READY' || o.status === 'OUT_FOR_DELIVERY') {
+        pendingDeliveries++;
+      }
+
+      const amount = new Decimal(o.totalAmount);
+
+      // বাতিলকৃত অর্ডার বাদে মোট রেভিনিউ ও ক্যাশ অন ডেলিভারি
+      if (o.status !== 'CANCELLED') {
+        totalOrderRevenue = totalOrderRevenue.plus(amount);
+
+        if (o.paymentStatus === 'COLLECTED') {
+          codCollected = codCollected.plus(amount);
+        } else if (o.paymentStatus === 'PENDING') {
+          codPending = codPending.plus(amount);
+        }
+      }
+    }
 
     return {
       branches: {
@@ -96,6 +149,14 @@ export class ReportService {
       },
       stocks: {
         currentTotalStock,
+      },
+      orders: {
+        totalOrders: allOrders.length,
+        ordersByStatus,
+        pendingDeliveries,
+        totalOrderRevenue: formatMoneyString(totalOrderRevenue),
+        codCollected: formatMoneyString(codCollected),
+        codPending: formatMoneyString(codPending),
       },
     };
   }
@@ -156,15 +217,15 @@ export class ReportService {
       const totalSubmittedQty = b.khatas.reduce((sum, k) => sum + k.submittedQty, 0);
       const totalPendingQty = Math.max(0, totalReceivedQty - totalSubmittedQty);
 
-      let totalPayment = 0;
-      let totalPaid = 0;
-      let totalDue = 0;
+      let totalPayment = new Decimal(0);
+      let totalPaid = new Decimal(0);
+      let totalDue = new Decimal(0);
 
       for (const w of b.writers) {
         for (const p of w.payments) {
-          totalPayment += Number(p.amount);
-          totalPaid += Number(p.paidAmount);
-          totalDue += Number(p.dueAmount);
+          totalPayment = totalPayment.plus(p.amount);
+          totalPaid = totalPaid.plus(p.paidAmount);
+          totalDue = totalDue.plus(p.dueAmount);
         }
       }
 
@@ -178,9 +239,9 @@ export class ReportService {
         totalReceivedQty,
         totalSubmittedQty,
         totalPendingQty,
-        totalPayment: Number(totalPayment.toFixed(2)),
-        totalPaid: Number(totalPaid.toFixed(2)),
-        totalDue: Number(totalDue.toFixed(2)),
+        totalPayment: formatMoneyString(totalPayment),
+        totalPaid: formatMoneyString(totalPaid),
+        totalDue: formatMoneyString(totalDue),
         currentStock: b.stocks[0]?.currentQty || 0,
       };
     });
@@ -232,29 +293,30 @@ export class ReportService {
     ]);
 
     const report = rawWriters.map((w) => {
-      const rate = Number(w.ratePerKhata);
+      const rate = new Decimal(w.ratePerKhata);
       const totalReceivedQty = w.khatas.reduce((sum, k) => sum + k.receivedQty, 0);
       const totalSubmittedQty = w.khatas.reduce((sum, k) => sum + k.submittedQty, 0);
       const totalPendingQty = Math.max(0, totalReceivedQty - totalSubmittedQty);
-      const totalEarned = rate * totalSubmittedQty;
+      const totalEarned = rate.mul(totalSubmittedQty);
 
-      const totalPaid = w.payments.reduce((sum, p) => sum + Number(p.paidAmount), 0);
-      const totalDue = Math.max(0, totalEarned - totalPaid);
+      const totalPaid = w.payments.reduce((sum, p) => sum.plus(p.paidAmount), new Decimal(0));
+      const rawDue = totalEarned.minus(totalPaid);
+      const totalDue = rawDue.gt(0) ? rawDue : new Decimal(0);
 
       return {
         writerId: w.id,
         writerName: w.name,
         phone: w.phone,
-        ratePerKhata: rate,
+        ratePerKhata: formatMoneyString(rate),
         isActive: w.isActive,
         branch: w.branch,
         totalBatches: w.khatas.length,
         totalReceivedQty,
         totalSubmittedQty,
         totalPendingQty,
-        totalEarned: Number(totalEarned.toFixed(2)),
-        totalPaid: Number(totalPaid.toFixed(2)),
-        totalDue: Number(totalDue.toFixed(2)),
+        totalEarned: formatMoneyString(totalEarned),
+        totalPaid: formatMoneyString(totalPaid),
+        totalDue: formatMoneyString(totalDue),
       };
     });
 
@@ -527,16 +589,16 @@ export class ReportService {
       id: p.id,
       writer: p.writer,
       khata: p.khata,
-      amount: Number(p.amount),
-      paidAmount: Number(p.paidAmount),
-      dueAmount: Number(p.dueAmount),
+      amount: formatMoneyString(p.amount),
+      paidAmount: formatMoneyString(p.paidAmount),
+      dueAmount: formatMoneyString(p.dueAmount),
       status: p.status,
       paymentDate: p.paymentDate,
       paymentItemsCount: p.paymentItems.length,
       paymentItems: p.paymentItems.map((pi) => ({
         id: pi.id,
         khata: pi.khata,
-        amount: Number(pi.amount),
+        amount: formatMoneyString(pi.amount),
         note: pi.note,
       })),
     }));
@@ -544,9 +606,9 @@ export class ReportService {
     return {
       summary: {
         totalRecords: total,
-        totalAmount: Number(agg._sum.amount || 0),
-        totalPaidAmount: Number(agg._sum.paidAmount || 0),
-        totalDueAmount: Number(agg._sum.dueAmount || 0),
+        totalAmount: formatMoneyString(agg._sum.amount),
+        totalPaidAmount: formatMoneyString(agg._sum.paidAmount),
+        totalDueAmount: formatMoneyString(agg._sum.dueAmount),
       },
       payments,
       meta: {
@@ -588,20 +650,41 @@ export class ReportService {
       },
     });
 
-    const writerMap = new Map<string, WriterDueReportItem>();
-    let overallDue = 0;
-    let overallBilled = 0;
-    let overallPaid = 0;
+    const writerMap = new Map<
+      string,
+      {
+        writerId: string;
+        writerName: string;
+        phone: string;
+        branchName: string;
+        ratePerKhata: string;
+        unpaidPaymentsCount: number;
+        totalBilled: Decimal;
+        totalPaid: Decimal;
+        totalDue: Decimal;
+        payments: Array<{
+          id: string;
+          amount: string;
+          paidAmount: string;
+          dueAmount: string;
+          status: (typeof payments)[0]['status'];
+          paymentDate: Date;
+        }>;
+      }
+    >();
+    let overallDue = new Decimal(0);
+    let overallBilled = new Decimal(0);
+    let overallPaid = new Decimal(0);
 
     for (const p of payments) {
       const w = p.writer;
-      const amount = Number(p.amount);
-      const paid = Number(p.paidAmount);
-      const due = Number(p.dueAmount);
+      const amount = new Decimal(p.amount);
+      const paid = new Decimal(p.paidAmount);
+      const due = new Decimal(p.dueAmount);
 
-      overallBilled += amount;
-      overallPaid += paid;
-      overallDue += due;
+      overallBilled = overallBilled.plus(amount);
+      overallPaid = overallPaid.plus(paid);
+      overallDue = overallDue.plus(due);
 
       if (!writerMap.has(w.id)) {
         writerMap.set(w.id, {
@@ -609,41 +692,46 @@ export class ReportService {
           writerName: w.name,
           phone: w.phone,
           branchName: w.branch.name,
-          ratePerKhata: Number(w.ratePerKhata),
+          ratePerKhata: formatMoneyString(w.ratePerKhata),
           unpaidPaymentsCount: 0,
-          totalBilled: 0,
-          totalPaid: 0,
-          totalDue: 0,
+          totalBilled: new Decimal(0),
+          totalPaid: new Decimal(0),
+          totalDue: new Decimal(0),
           payments: [],
         });
       }
 
       const item = writerMap.get(w.id)!;
       item.unpaidPaymentsCount += 1;
-      item.totalBilled = Number((item.totalBilled + amount).toFixed(2));
-      item.totalPaid = Number((item.totalPaid + paid).toFixed(2));
-      item.totalDue = Number((item.totalDue + due).toFixed(2));
+      item.totalBilled = item.totalBilled.plus(amount);
+      item.totalPaid = item.totalPaid.plus(paid);
+      item.totalDue = item.totalDue.plus(due);
       item.payments.push({
         id: p.id,
-        amount,
-        paidAmount: paid,
-        dueAmount: due,
+        amount: formatMoneyString(amount),
+        paidAmount: formatMoneyString(paid),
+        dueAmount: formatMoneyString(due),
         status: p.status,
         paymentDate: p.paymentDate,
       });
     }
 
-    const writersDue = Array.from(writerMap.values()).sort(
-      (a, b) => b.totalDue - a.totalDue
-    );
+    const writersDue: WriterDueReportItem[] = Array.from(writerMap.values())
+      .sort((a, b) => (b.totalDue.gt(a.totalDue) ? 1 : b.totalDue.lt(a.totalDue) ? -1 : 0))
+      .map((item) => ({
+        ...item,
+        totalBilled: formatMoneyString(item.totalBilled),
+        totalPaid: formatMoneyString(item.totalPaid),
+        totalDue: formatMoneyString(item.totalDue),
+      }));
 
     return {
       summary: {
         totalWritersWithDue: writersDue.length,
         totalUnpaidPayments: payments.length,
-        overallBilledAmount: Number(overallBilled.toFixed(2)),
-        overallPaidAmount: Number(overallPaid.toFixed(2)),
-        overallDueAmount: Number(overallDue.toFixed(2)),
+        overallBilledAmount: formatMoneyString(overallBilled),
+        overallPaidAmount: formatMoneyString(overallPaid),
+        overallDueAmount: formatMoneyString(overallDue),
       },
       writersDue,
     };
@@ -727,6 +815,207 @@ export class ReportService {
         total,
         totalPages: Math.ceil(total / limit) || 1,
       },
+    };
+  }
+
+  /**
+   * ১০. অর্ডার রিপোর্ট (Order Report)
+   */
+  static async getOrderReport(query: OrderReportQueryDto): Promise<OrderReportResponse> {
+    const { page, limit, status, branchId, district, fromDate, toDate } = query;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.OrderWhereInput = {};
+    if (status) where.status = status;
+    if (district) {
+      where.preferredDistrict = { contains: district, mode: 'insensitive' };
+    }
+    if (branchId) {
+      where.khataAssignments = { some: { branchId } };
+    }
+    if (fromDate || toDate) {
+      where.orderDate = {};
+      if (fromDate) where.orderDate.gte = new Date(fromDate);
+      if (toDate) {
+        const to = new Date(toDate);
+        to.setHours(23, 59, 59, 999);
+        where.orderDate.lte = to;
+      }
+    }
+
+    const [allMatchingOrders, orders] = await Promise.all([
+      prisma.order.findMany({
+        where,
+        select: {
+          totalAmount: true,
+          status: true,
+          paymentStatus: true,
+        },
+      }),
+      prisma.order.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { orderDate: 'desc' },
+        include: {
+          subjectPricing: {
+            select: {
+              class: { select: { name: true } },
+              subject: { select: { name: true } },
+            },
+          },
+          _count: {
+            select: { khataAssignments: true },
+          },
+        },
+      }),
+    ]);
+
+    let totalRevenue = new Decimal(0);
+    let collectedRevenue = new Decimal(0);
+    let pendingRevenue = new Decimal(0);
+    let cancelledOrdersCount = 0;
+
+    for (const o of allMatchingOrders) {
+      const amount = new Decimal(o.totalAmount);
+      if (o.status === 'CANCELLED') {
+        cancelledOrdersCount++;
+      } else {
+        totalRevenue = totalRevenue.plus(amount);
+        if (o.paymentStatus === 'COLLECTED') {
+          collectedRevenue = collectedRevenue.plus(amount);
+        } else if (o.paymentStatus === 'PENDING') {
+          pendingRevenue = pendingRevenue.plus(amount);
+        }
+      }
+    }
+
+    const total = allMatchingOrders.length;
+
+    return {
+      summary: {
+        totalOrders: total,
+        totalRevenue: formatMoneyString(totalRevenue),
+        collectedRevenue: formatMoneyString(collectedRevenue),
+        pendingRevenue: formatMoneyString(pendingRevenue),
+        cancelledOrdersCount,
+      },
+      orders: orders.map((o) => ({
+        id: o.id,
+        orderNumber: o.orderNumber,
+        customerName: o.customerName,
+        customerPhone: o.customerPhone,
+        preferredDistrict: o.preferredDistrict,
+        subjectName: o.subjectPricing.subject.name,
+        className: o.subjectPricing.class.name,
+        quantity: o.quantity,
+        unitPrice: formatMoneyString(o.unitPrice),
+        totalAmount: formatMoneyString(o.totalAmount),
+        status: o.status,
+        paymentStatus: o.paymentStatus,
+        orderDate: o.orderDate,
+        deliveredAt: o.deliveredAt,
+        assignmentsCount: o._count.khataAssignments,
+      })),
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit) || 1,
+      },
+    };
+  }
+
+  /**
+   * ১১. লাভ ও ক্ষতি সামারি রিপোর্ট (Profit Summary Report)
+   * তারিখ রেঞ্জে আয় (DELIVERED অর্ডারের totalAmount),
+   * Writer-দের মোট পারিশ্রমিক (ওই অর্ডারের Khata-গুলোর submittedQty × writer ratePerKhata),
+   * লাভ = আয় − পারিশ্রমিক। সব হিসাব Decimal-এ।
+   */
+  static async getProfitSummary(query: ProfitSummaryQueryDto): Promise<ProfitSummaryResponse> {
+    const { fromDate, toDate } = query;
+
+    const where: Prisma.OrderWhereInput = {
+      status: 'DELIVERED',
+    };
+
+    if (fromDate || toDate) {
+      const dateFilter: Prisma.DateTimeFilter = {};
+      if (fromDate) dateFilter.gte = new Date(fromDate);
+      if (toDate) {
+        const to = new Date(toDate);
+        to.setHours(23, 59, 59, 999);
+        dateFilter.lte = to;
+      }
+      where.OR = [
+        { deliveredAt: dateFilter },
+        { deliveredAt: null, orderDate: dateFilter },
+      ];
+    }
+
+    const deliveredOrders = await prisma.order.findMany({
+      where,
+      orderBy: [{ deliveredAt: 'desc' }, { orderDate: 'desc' }],
+      include: {
+        khataAssignments: {
+          include: {
+            writer: {
+              select: {
+                id: true,
+                name: true,
+                ratePerKhata: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    let totalRevenue = new Decimal(0);
+    let totalWriterRemuneration = new Decimal(0);
+
+    const formattedOrders = deliveredOrders.map((order) => {
+      const orderRevenue = new Decimal(order.totalAmount);
+      let writerCost = new Decimal(0);
+
+      for (const assignment of order.khataAssignments) {
+        const rate = new Decimal(assignment.writer.ratePerKhata);
+        const submitted = new Decimal(assignment.submittedQty);
+        writerCost = writerCost.plus(submitted.mul(rate));
+      }
+
+      const orderProfit = orderRevenue.minus(writerCost);
+
+      totalRevenue = totalRevenue.plus(orderRevenue);
+      totalWriterRemuneration = totalWriterRemuneration.plus(writerCost);
+
+      return {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        customerName: order.customerName,
+        deliveredAt: order.deliveredAt,
+        orderRevenue: formatMoneyString(orderRevenue),
+        writerCost: formatMoneyString(writerCost),
+        orderProfit: formatMoneyString(orderProfit),
+      };
+    });
+
+    const netProfit = totalRevenue.minus(totalWriterRemuneration);
+    const profitMarginPercentage = totalRevenue.gt(0)
+      ? netProfit.div(totalRevenue).mul(100).toFixed(2)
+      : '0.00';
+
+    return {
+      dateRange: {
+        fromDate: fromDate ?? null,
+        toDate: toDate ?? null,
+      },
+      deliveredOrdersCount: deliveredOrders.length,
+      totalRevenue: formatMoneyString(totalRevenue),
+      totalWriterRemuneration: formatMoneyString(totalWriterRemuneration),
+      netProfit: formatMoneyString(netProfit),
+      profitMarginPercentage,
+      deliveredOrders: formattedOrders,
     };
   }
 }

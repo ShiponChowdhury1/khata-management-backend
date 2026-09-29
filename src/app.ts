@@ -1,5 +1,6 @@
 import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import { corsOptions } from './config/cors.js';
 import rootRouter from './routes/index.js';
 import { errorHandler } from './middlewares/error.middleware.js';
@@ -12,6 +13,9 @@ const app: Express = express();
 // ==========================================
 // গ্লোবাল মিডলওয়্যার কনফিগারেশন
 // ==========================================
+
+// সিকিউরিটি হেডার্স (Helmet)
+app.use(helmet());
 
 // CORS মিডলওয়্যার
 app.use(cors(corsOptions));

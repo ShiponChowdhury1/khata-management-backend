@@ -1,26 +1,27 @@
-import { prisma } from '../../lib/prisma.js';
+import { prisma, Decimal } from '../../lib/prisma.js';
 import { ApiError } from '../../utils/apiError.js';
+import { formatMoneyString } from '../../utils/money.js';
 import type { Prisma } from '../../../generated/prisma/client.js';
 import type {
   CreateWriterDto,
   UpdateWriterDto,
   WriterQueryDto,
-  KhataHistoryQueryDto,
-  PaymentHistoryQueryDto,
   WriterDetails,
   WriterKhataSummary,
   WriterPaymentSummary,
+  KhataHistoryQueryDto,
+  PaymentHistoryQueryDto,
 } from './writer.types.js';
 
 /**
- * লেখক (Writer) সার্ভিস — কোর বিজনেস লজিক, এগ্রিগেশন ও অডিট ট্র্যাকিং
+ * লেখক (Writer) সার্ভিস — কোর বিজনেস লজিক, পরিসংখ্যান ও অডিট লগিং
  */
 export class WriterService {
   /**
-   * নতুন লেখক তৈরি করা
+   * নতুন লেখক তৈরি করা (Atomic Transaction সহ)
    */
   static async createWriter(dto: CreateWriterDto, userId: string) {
-    // ১. ব্রাঞ্চ আইডি ভ্যালিড এবং একটিভ কি না যাচাই
+    // ১. ব্রাঞ্চ আইডি ভ্যালিড এবং সক্রিয় কি না যাচাই
     const branch = await prisma.branch.findUnique({
       where: { id: dto.branchId },
     });
@@ -33,7 +34,7 @@ export class WriterService {
       throw ApiError.badRequest(`Cannot assign writer to an inactive branch ('${branch.name}')`);
     }
 
-    // ২. একই ফোন নম্বরের লেখক ইতিমধ্যে আছে কি না চেক
+    // ২. ফোন নম্বর দিয়ে ডুপ্লিকেট লেখক চেক
     const existingWriter = await prisma.writer.findFirst({
       where: { phone: dto.phone.trim() },
     });
@@ -42,40 +43,47 @@ export class WriterService {
       throw ApiError.conflict(`Writer with phone number '${dto.phone}' already exists`);
     }
 
-    // ৩. নতুন লেখক তৈরি
-    const writer = await prisma.writer.create({
-      data: {
-        name: dto.name.trim(),
-        phone: dto.phone.trim(),
-        email: dto.email?.trim() || null,
-        district: dto.district || 'Dhaka',
-        branchId: dto.branchId,
-        ratePerKhata: dto.ratePerKhata,
-      },
-      include: {
-        branch: {
-          select: { id: true, name: true },
-        },
-      },
-    });
+    const ratePerKhataDec = new Decimal(dto.ratePerKhata);
 
-    // ৪. অডিট লগ তৈরি
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'CREATE_WRITER',
-        entityType: 'Writer',
-        entityId: writer.id,
-        details: {
-          name: writer.name,
-          phone: writer.phone,
-          branchId: writer.branchId,
-          ratePerKhata: Number(writer.ratePerKhata),
+    // ৩. নতুন লেখক তৈরি ও অডিট লগ ট্রানজ্যাকশনে
+    return await prisma.$transaction(async (tx) => {
+      const writer = await tx.writer.create({
+        data: {
+          name: dto.name.trim(),
+          phone: dto.phone.trim(),
+          email: dto.email?.trim() || null,
+          district: dto.district || 'Dhaka',
+          branchId: dto.branchId,
+          ratePerKhata: ratePerKhataDec,
         },
-      },
-    });
+        include: {
+          branch: {
+            select: { id: true, name: true },
+          },
+        },
+      });
 
-    return writer;
+      // অডিট লগ তৈরি
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'CREATE_WRITER',
+          entityType: 'Writer',
+          entityId: writer.id,
+          details: {
+            name: writer.name,
+            phone: writer.phone,
+            branchId: writer.branchId,
+            ratePerKhata: formatMoneyString(writer.ratePerKhata),
+          },
+        },
+      });
+
+      return {
+        ...writer,
+        ratePerKhata: formatMoneyString(writer.ratePerKhata),
+      };
+    });
   }
 
   /**
@@ -116,20 +124,19 @@ export class WriterService {
         orderBy: { createdAt: 'desc' },
         include: {
           branch: {
-            select: { id: true, name: true, phone: true },
-          },
-          _count: {
-            select: {
-              khatas: true,
-              payments: true,
-            },
+            select: { id: true, name: true },
           },
         },
       }),
     ]);
 
+    const formattedWriters = writers.map((w) => ({
+      ...w,
+      ratePerKhata: formatMoneyString(w.ratePerKhata),
+    }));
+
     return {
-      writers,
+      writers: formattedWriters,
       meta: {
         total,
         page,
@@ -140,7 +147,7 @@ export class WriterService {
   }
 
   /**
-   * একজন লেখকের বিস্তারিত প্রোফাইল, সাথে খাতা ও পেমেন্ট এগ্রিগেশন পরিসংখ্যান
+   * নির্দিষ্ট লেখকের বিস্তারিত তথ্য এবং পারফরম্যান্স সামারি
    */
   static async getWriterById(id: string): Promise<WriterDetails> {
     const writer = await prisma.writer.findUnique({
@@ -183,15 +190,15 @@ export class WriterService {
       }),
     ]);
 
-    const totalReceived = khatasAggregate._sum.receivedQty ?? 0;
-    const totalSubmitted = khatasAggregate._sum.submittedQty ?? 0;
-    const totalPending = totalReceived - totalSubmitted;
+    const totalReceivedQty = khatasAggregate._sum.receivedQty ?? 0;
+    const totalSubmittedQty = khatasAggregate._sum.submittedQty ?? 0;
+    const totalPendingQty = Math.max(0, totalReceivedQty - totalSubmittedQty);
 
     const khataSummary: WriterKhataSummary = {
       totalKhatas,
-      totalReceivedQty: totalReceived,
-      totalSubmittedQty: totalSubmitted,
-      totalPendingQty: Math.max(0, totalPending),
+      totalReceivedQty,
+      totalSubmittedQty,
+      totalPendingQty,
       byStatus: {
         distributed: distributedKhatas,
         partiallySubmitted: partiallySubmittedKhatas,
@@ -216,9 +223,9 @@ export class WriterService {
       ]);
 
     const paymentSummary: WriterPaymentSummary = {
-      totalBillAmount: Number(paymentsAggregate._sum.amount ?? 0),
-      totalPaidAmount: Number(paymentsAggregate._sum.paidAmount ?? 0),
-      totalDueAmount: Number(paymentsAggregate._sum.dueAmount ?? 0),
+      totalBillAmount: formatMoneyString(paymentsAggregate._sum.amount),
+      totalPaidAmount: formatMoneyString(paymentsAggregate._sum.paidAmount),
+      totalDueAmount: formatMoneyString(paymentsAggregate._sum.dueAmount),
       byStatus: {
         paid: paidPayments,
         partial: partialPayments,
@@ -232,7 +239,7 @@ export class WriterService {
       phone: writer.phone,
       email: writer.email,
       district: writer.district,
-      ratePerKhata: Number(writer.ratePerKhata),
+      ratePerKhata: formatMoneyString(writer.ratePerKhata),
       isActive: writer.isActive,
       branch: writer.branch,
       khataSummary,
@@ -243,7 +250,7 @@ export class WriterService {
   }
 
   /**
-   * লেখক তথ্য আপডেট করা
+   * লেখক তথ্য আপডেট করা (Atomic Transaction সহ)
    */
   static async updateWriter(id: string, dto: UpdateWriterDto, userId: string) {
     const existingWriter = await prisma.writer.findUnique({
@@ -254,22 +261,22 @@ export class WriterService {
       throw ApiError.notFound(`Writer not found with ID: ${id}`);
     }
 
-    // যদি ব্রাঞ্চ পরিবর্তন করা হয়, নতুন ব্রাঞ্চ অস্তিত্ব ও একটিভ কি না যাচাই
+    // ব্রাঞ্চ পরিবর্তন করলে নতুন ব্রাঞ্চ সক্রিয় কি না চেক
     if (dto.branchId && dto.branchId !== existingWriter.branchId) {
       const newBranch = await prisma.branch.findUnique({
         where: { id: dto.branchId },
       });
 
       if (!newBranch) {
-        throw ApiError.notFound(`Target branch not found with ID: ${dto.branchId}`);
+        throw ApiError.notFound(`Branch not found with ID: ${dto.branchId}`);
       }
 
       if (!newBranch.isActive) {
-        throw ApiError.badRequest(`Cannot move writer to an inactive branch ('${newBranch.name}')`);
+        throw ApiError.badRequest(`Cannot transfer writer to an inactive branch ('${newBranch.name}')`);
       }
     }
 
-    // যদি ফোন পরিবর্তন করা হয়, তবে অন্য কোনো লেখকের সাথে সংঘর্ষ হয় কি না যাচাই
+    // ফোন নম্বর পরিবর্তন করলে ইউনিকনেস চেক
     if (dto.phone && dto.phone.trim() !== existingWriter.phone) {
       const duplicatePhone = await prisma.writer.findFirst({
         where: {
@@ -283,55 +290,63 @@ export class WriterService {
       }
     }
 
-    const updatedWriter = await prisma.writer.update({
-      where: { id },
-      data: {
-        name: dto.name?.trim(),
-        phone: dto.phone?.trim(),
-        email: dto.email !== undefined ? dto.email?.trim() || null : undefined,
-        district: dto.district,
-        branchId: dto.branchId,
-        ratePerKhata: dto.ratePerKhata,
-        isActive: dto.isActive,
-      },
-      include: {
-        branch: { select: { id: true, name: true } },
-      },
-    });
+    const ratePerKhataDec =
+      dto.ratePerKhata !== undefined ? new Decimal(dto.ratePerKhata) : undefined;
 
-    // অডিট লগ
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'UPDATE_WRITER',
-        entityType: 'Writer',
-        entityId: id,
-        details: {
-          before: {
-            name: existingWriter.name,
-            phone: existingWriter.phone,
-            email: existingWriter.email,
-            ratePerKhata: Number(existingWriter.ratePerKhata),
-            branchId: existingWriter.branchId,
-            isActive: existingWriter.isActive,
-          },
-          after: {
-            name: updatedWriter.name,
-            phone: updatedWriter.phone,
-            email: updatedWriter.email,
-            ratePerKhata: Number(updatedWriter.ratePerKhata),
-            branchId: updatedWriter.branchId,
-            isActive: updatedWriter.isActive,
+    return await prisma.$transaction(async (tx) => {
+      const updatedWriter = await tx.writer.update({
+        where: { id },
+        data: {
+          name: dto.name?.trim(),
+          phone: dto.phone?.trim(),
+          email: dto.email !== undefined ? dto.email?.trim() || null : undefined,
+          district: dto.district,
+          branchId: dto.branchId,
+          ...(ratePerKhataDec !== undefined && { ratePerKhata: ratePerKhataDec }),
+          isActive: dto.isActive,
+        },
+        include: {
+          branch: { select: { id: true, name: true } },
+        },
+      });
+
+      // অডিট লগ
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'UPDATE_WRITER',
+          entityType: 'Writer',
+          entityId: id,
+          details: {
+            before: {
+              name: existingWriter.name,
+              phone: existingWriter.phone,
+              email: existingWriter.email,
+              ratePerKhata: formatMoneyString(existingWriter.ratePerKhata),
+              branchId: existingWriter.branchId,
+              isActive: existingWriter.isActive,
+            },
+            after: {
+              name: updatedWriter.name,
+              phone: updatedWriter.phone,
+              email: updatedWriter.email,
+              ratePerKhata: formatMoneyString(updatedWriter.ratePerKhata),
+              branchId: updatedWriter.branchId,
+              isActive: updatedWriter.isActive,
+            },
           },
         },
-      },
-    });
+      });
 
-    return updatedWriter;
+      return {
+        ...updatedWriter,
+        ratePerKhata: formatMoneyString(updatedWriter.ratePerKhata),
+      };
+    });
   }
 
   /**
-   * লেখক স্ট্যাটাস টগল (isActive)
+   * লেখক স্ট্যাটাস টগল (isActive) - Atomic Transaction সহ
    */
   static async toggleWriterStatus(id: string, userId: string) {
     const existingWriter = await prisma.writer.findUnique({
@@ -344,29 +359,34 @@ export class WriterService {
 
     const newStatus = !existingWriter.isActive;
 
-    const updatedWriter = await prisma.writer.update({
-      where: { id },
-      data: { isActive: newStatus },
-      include: {
-        branch: { select: { id: true, name: true } },
-      },
-    });
-
-    // অডিট লগ
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'TOGGLE_WRITER_STATUS',
-        entityType: 'Writer',
-        entityId: id,
-        details: {
-          previousStatus: existingWriter.isActive,
-          newStatus: updatedWriter.isActive,
+    return await prisma.$transaction(async (tx) => {
+      const updatedWriter = await tx.writer.update({
+        where: { id },
+        data: { isActive: newStatus },
+        include: {
+          branch: { select: { id: true, name: true } },
         },
-      },
-    });
+      });
 
-    return updatedWriter;
+      // অডিট লগ
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'TOGGLE_WRITER_STATUS',
+          entityType: 'Writer',
+          entityId: id,
+          details: {
+            previousStatus: existingWriter.isActive,
+            newStatus: updatedWriter.isActive,
+          },
+        },
+      });
+
+      return {
+        ...updatedWriter,
+        ratePerKhata: formatMoneyString(updatedWriter.ratePerKhata),
+      };
+    });
   }
 
   /**
@@ -405,10 +425,13 @@ export class WriterService {
       _count: true,
     });
 
-    const totalDue = Number(duePaymentsAggregate._sum.dueAmount ?? 0);
-    if (duePaymentsAggregate._count > 0 && totalDue > 0) {
+    const totalDue = duePaymentsAggregate._sum.dueAmount
+      ? new Decimal(duePaymentsAggregate._sum.dueAmount)
+      : new Decimal(0);
+
+    if (duePaymentsAggregate._count > 0 && totalDue.gt(0)) {
       throw ApiError.badRequest(
-        `Cannot delete writer '${existingWriter.name}': Writer has ${duePaymentsAggregate._count} pending payment record(s) with an unpaid due of BDT ${totalDue}. Please clear all dues before deleting.`
+        `Cannot delete writer '${existingWriter.name}': Writer has ${duePaymentsAggregate._count} pending payment record(s) with an unpaid due of BDT ${totalDue.toFixed(2)}. Please clear all dues before deleting.`
       );
     }
 
@@ -424,36 +447,37 @@ export class WriterService {
       );
     }
 
-    // ৪. সম্পূর্ণ পরিচ্ছন্ন থাকলে ডেটাবেজ থেকে মোছা
-    await prisma.writer.delete({
-      where: { id },
-    });
+    // ৪. সম্পূর্ণ পরিচ্ছন্ন থাকলে ডেটাবেজ থেকে মোছা (ট্রানজ্যাকশনে)
+    return await prisma.$transaction(async (tx) => {
+      await tx.writer.delete({
+        where: { id },
+      });
 
-    // অডিট লগ
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'DELETE_WRITER',
-        entityType: 'Writer',
-        entityId: id,
-        details: {
-          deletedWriterName: existingWriter.name,
-          deletedAt: new Date().toISOString(),
+      // অডিট লগ
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'DELETE_WRITER',
+          entityType: 'Writer',
+          entityId: id,
+          details: {
+            deletedWriterName: existingWriter.name,
+            deletedAt: new Date().toISOString(),
+          },
         },
-      },
-    });
+      });
 
-    return { id, name: existingWriter.name };
+      return { id, name: existingWriter.name };
+    });
   }
 
   /**
    * একজন লেখকের খাতা হিস্টোরি (তারিখ অনুযায়ী সাজানো ও পেজিনেশন সহ)
    */
   static async getWriterKhataHistory(writerId: string, query: KhataHistoryQueryDto) {
-    // লেখক অস্তিত্ব চেক
     const writer = await prisma.writer.findUnique({
       where: { id: writerId },
-      select: { id: true, name: true },
+      select: { id: true, name: true, ratePerKhata: true },
     });
 
     if (!writer) {
@@ -481,14 +505,16 @@ export class WriterService {
       }),
     ]);
 
-    // অ্যাপ্লিকেশন লেভেলে pendingQty ক্যালকুলেশন
     const khatas = rawKhatas.map((k) => ({
       ...k,
       pendingQty: Math.max(0, k.receivedQty - k.submittedQty),
     }));
 
     return {
-      writer,
+      writer: {
+        ...writer,
+        ratePerKhata: formatMoneyString(writer.ratePerKhata),
+      },
       khatas,
       meta: {
         total,
@@ -503,10 +529,9 @@ export class WriterService {
    * একজন লেখকের পেমেন্ট হিস্টোরি (তারিখ অনুযায়ী সাজানো ও পেজিনেশন সহ)
    */
   static async getWriterPaymentHistory(writerId: string, query: PaymentHistoryQueryDto) {
-    // লেখক অস্তিত্ব চেক
     const writer = await prisma.writer.findUnique({
       where: { id: writerId },
-      select: { id: true, name: true },
+      select: { id: true, name: true, ratePerKhata: true },
     });
 
     if (!writer) {
@@ -521,7 +546,7 @@ export class WriterService {
       ...(status && { status }),
     };
 
-    const [total, payments] = await Promise.all([
+    const [total, rawPayments] = await Promise.all([
       prisma.payment.count({ where }),
       prisma.payment.findMany({
         where,
@@ -541,8 +566,22 @@ export class WriterService {
       }),
     ]);
 
+    const payments = rawPayments.map((p) => ({
+      ...p,
+      amount: formatMoneyString(p.amount),
+      paidAmount: formatMoneyString(p.paidAmount),
+      dueAmount: formatMoneyString(p.dueAmount),
+      paymentItems: p.paymentItems.map((item) => ({
+        ...item,
+        amount: formatMoneyString(item.amount),
+      })),
+    }));
+
     return {
-      writer,
+      writer: {
+        ...writer,
+        ratePerKhata: formatMoneyString(writer.ratePerKhata),
+      },
       payments,
       meta: {
         total,

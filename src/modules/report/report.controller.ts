@@ -11,6 +11,8 @@ import type {
   PaymentReportQueryDto,
   DueReportQueryDto,
   StockReportQueryDto,
+  OrderReportQueryDto,
+  ProfitSummaryQueryDto,
 } from './report.types.js';
 
 /**
@@ -94,3 +96,21 @@ export const getStockReport = asyncHandler(async (req: Request, res: Response) =
     movements: result.movements,
   }, result.meta);
 });
+
+// ১০. অর্ডার রিপোর্ট (GET /api/reports/order-report)
+export const getOrderReport = asyncHandler(async (req: Request, res: Response) => {
+  const query = req.query as unknown as OrderReportQueryDto;
+  const result = await ReportService.getOrderReport(query);
+  sendSuccess(res, 200, 'Order report retrieved successfully', {
+    summary: result.summary,
+    orders: result.orders,
+  }, result.meta);
+});
+
+// ১১. প্রফিট সামারি রিপোর্ট (GET /api/reports/profit-summary)
+export const getProfitSummary = asyncHandler(async (req: Request, res: Response) => {
+  const query = req.query as unknown as ProfitSummaryQueryDto;
+  const report = await ReportService.getProfitSummary(query);
+  sendSuccess(res, 200, 'Profit summary report retrieved successfully', report);
+});
+

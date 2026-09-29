@@ -1,0 +1,17 @@
+-- AlterTable
+ALTER TABLE "orders" ALTER COLUMN "unitPrice" SET DATA TYPE DECIMAL(12,2),
+ALTER COLUMN "totalAmount" SET DATA TYPE DECIMAL(12,2);
+
+-- AlterTable
+ALTER TABLE "payment_items" ALTER COLUMN "amount" SET DATA TYPE DECIMAL(12,2);
+
+-- AlterTable
+ALTER TABLE "payments" ALTER COLUMN "amount" SET DATA TYPE DECIMAL(12,2),
+ALTER COLUMN "paidAmount" SET DATA TYPE DECIMAL(12,2),
+ALTER COLUMN "dueAmount" SET DATA TYPE DECIMAL(12,2);
+
+-- AlterTable
+ALTER TABLE "subject_pricings" ALTER COLUMN "pricePerKhata" SET DATA TYPE DECIMAL(12,2);
+
+-- AlterTable
+ALTER TABLE "writers" ALTER COLUMN "ratePerKhata" SET DATA TYPE DECIMAL(12,2);

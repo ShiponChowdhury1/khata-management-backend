@@ -88,6 +88,35 @@ export const stockReportQuerySchema = z.object({
   toDate: dateValidator,
 });
 
+// ১০. অর্ডার রিপোর্ট কুয়েরি স্কিমা
+export const orderReportQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(10),
+  status: z
+    .enum([
+      'PENDING',
+      'CONFIRMED',
+      'ASSIGNED',
+      'IN_PROGRESS',
+      'WRITING',
+      'READY',
+      'OUT_FOR_DELIVERY',
+      'DELIVERED',
+      'CANCELLED',
+    ] as const)
+    .optional(),
+  branchId: z.string().uuid('Invalid branch ID format').optional(),
+  district: z.string().trim().optional(),
+  fromDate: dateValidator,
+  toDate: dateValidator,
+});
+
+// ১১. প্রফিট সামারি রিপোর্ট কুয়েরি স্কিমা
+export const profitSummaryQuerySchema = z.object({
+  fromDate: dateValidator,
+  toDate: dateValidator,
+});
+
 /**
  * TypeScript DTOs
  */
@@ -100,6 +129,8 @@ export type PendingKhataReportQueryDto = z.infer<typeof pendingKhataReportQueryS
 export type PaymentReportQueryDto = z.infer<typeof paymentReportQuerySchema>;
 export type DueReportQueryDto = z.infer<typeof dueReportQuerySchema>;
 export type StockReportQueryDto = z.infer<typeof stockReportQuerySchema>;
+export type OrderReportQueryDto = z.infer<typeof orderReportQuerySchema>;
+export type ProfitSummaryQueryDto = z.infer<typeof profitSummaryQuerySchema>;
 
 /**
  * ১. ড্যাশবোর্ড ওভারভিউ সামারি ইন্টারফেস
@@ -120,12 +151,20 @@ export interface DashboardSummaryResponse {
     totalPendingQty: number;
   };
   financials: {
-    totalPaymentAmount: number;
-    totalPaidAmount: number;
-    totalDueAmount: number;
+    totalPaymentAmount: string;
+    totalPaidAmount: string;
+    totalDueAmount: string;
   };
   stocks: {
     currentTotalStock: number;
+  };
+  orders: {
+    totalOrders: number;
+    ordersByStatus: Record<string, number>;
+    pendingDeliveries: number;
+    totalOrderRevenue: string;
+    codCollected: string;
+    codPending: string;
   };
 }
 
@@ -142,9 +181,9 @@ export interface BranchWiseReportItem {
   totalReceivedQty: number;
   totalSubmittedQty: number;
   totalPendingQty: number;
-  totalPayment: number;
-  totalPaid: number;
-  totalDue: number;
+  totalPayment: string;
+  totalPaid: string;
+  totalDue: string;
   currentStock: number;
 }
 
@@ -155,7 +194,7 @@ export interface WriterWiseReportItem {
   writerId: string;
   writerName: string;
   phone: string;
-  ratePerKhata: number;
+  ratePerKhata: string;
   isActive: boolean;
   branch: {
     id: string;
@@ -165,9 +204,9 @@ export interface WriterWiseReportItem {
   totalReceivedQty: number;
   totalSubmittedQty: number;
   totalPendingQty: number;
-  totalEarned: number;
-  totalPaid: number;
-  totalDue: number;
+  totalEarned: string;
+  totalPaid: string;
+  totalDue: string;
 }
 
 /**
@@ -178,17 +217,77 @@ export interface WriterDueReportItem {
   writerName: string;
   phone: string;
   branchName: string;
-  ratePerKhata: number;
+  ratePerKhata: string;
   unpaidPaymentsCount: number;
-  totalBilled: number;
-  totalPaid: number;
-  totalDue: number;
+  totalBilled: string;
+  totalPaid: string;
+  totalDue: string;
   payments: Array<{
     id: string;
-    amount: number;
-    paidAmount: number;
-    dueAmount: number;
+    amount: string;
+    paidAmount: string;
+    dueAmount: string;
     status: PaymentStatus;
     paymentDate: Date;
+  }>;
+}
+
+/**
+ * ১০. অর্ডার রিপোর্ট রেসপন্স ইন্টারফেস
+ */
+export interface OrderReportResponse {
+  summary: {
+    totalOrders: number;
+    totalRevenue: string;
+    collectedRevenue: string;
+    pendingRevenue: string;
+    cancelledOrdersCount: number;
+  };
+  orders: Array<{
+    id: string;
+    orderNumber: string;
+    customerName: string;
+    customerPhone: string;
+    preferredDistrict: string | null;
+    subjectName: string;
+    className: string;
+    quantity: number;
+    unitPrice: string;
+    totalAmount: string;
+    status: string;
+    paymentStatus: string;
+    orderDate: Date;
+    deliveredAt: Date | null;
+    assignmentsCount: number;
+  }>;
+  meta: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+/**
+ * ১১. প্রফিট সামারি রিপোর্ট রেসপন্স ইন্টারফেস
+ */
+export interface ProfitSummaryResponse {
+  dateRange: {
+    fromDate: string | null;
+    toDate: string | null;
+  };
+  deliveredOrdersCount: number;
+  totalRevenue: string;
+  totalWriterRemuneration: string;
+  netProfit: string;
+  profitMarginPercentage: string;
+  deliveredOrders: Array<{
+    orderId: string;
+    orderNumber: string;
+    customerName: string;
+    deliveredAt: Date | null;
+    orderRevenue: string;
+    writerCost: string;
+    orderProfit: string;
   }>;
 }

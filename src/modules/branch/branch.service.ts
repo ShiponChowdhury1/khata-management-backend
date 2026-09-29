@@ -31,31 +31,33 @@ export class BranchService {
       throw ApiError.conflict(`Branch with name '${dto.name}' already exists`);
     }
 
-    // ডেটাবেজে নতুন ব্রাঞ্চ তৈরি
-    const branch = await prisma.branch.create({
-      data: {
-        name: dto.name.trim(),
-        address: dto.address?.trim() || null,
-        phone: dto.phone?.trim() || null,
-      },
-    });
-
-    // অডিট লগ তৈরি
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'CREATE_BRANCH',
-        entityType: 'Branch',
-        entityId: branch.id,
-        details: {
-          name: branch.name,
-          address: branch.address,
-          phone: branch.phone,
+    // ডেটাবেজে নতুন ব্রাঞ্চ তৈরি ও অডিট লগ (Atomic Transaction)
+    return await prisma.$transaction(async (tx) => {
+      const branch = await tx.branch.create({
+        data: {
+          name: dto.name.trim(),
+          address: dto.address?.trim() || null,
+          phone: dto.phone?.trim() || null,
         },
-      },
-    });
+      });
 
-    return branch;
+      // অডিট লগ তৈরি
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'CREATE_BRANCH',
+          entityType: 'Branch',
+          entityId: branch.id,
+          details: {
+            name: branch.name,
+            address: branch.address,
+            phone: branch.phone,
+          },
+        },
+      });
+
+      return branch;
+    });
   }
 
   /**
@@ -203,41 +205,43 @@ export class BranchService {
       }
     }
 
-    const updatedBranch = await prisma.branch.update({
-      where: { id },
-      data: {
-        name: dto.name?.trim(),
-        address: dto.address !== undefined ? dto.address?.trim() || null : undefined,
-        phone: dto.phone !== undefined ? dto.phone?.trim() || null : undefined,
-        isActive: dto.isActive,
-      },
-    });
+    return prisma.$transaction(async (tx) => {
+      const updatedBranch = await tx.branch.update({
+        where: { id },
+        data: {
+          name: dto.name?.trim(),
+          address: dto.address !== undefined ? dto.address?.trim() || null : undefined,
+          phone: dto.phone !== undefined ? dto.phone?.trim() || null : undefined,
+          isActive: dto.isActive,
+        },
+      });
 
-    // অডিট লগ
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'UPDATE_BRANCH',
-        entityType: 'Branch',
-        entityId: id,
-        details: {
-          before: {
-            name: existingBranch.name,
-            address: existingBranch.address,
-            phone: existingBranch.phone,
-            isActive: existingBranch.isActive,
-          },
-          after: {
-            name: updatedBranch.name,
-            address: updatedBranch.address,
-            phone: updatedBranch.phone,
-            isActive: updatedBranch.isActive,
+      // অডিট লগ
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'UPDATE_BRANCH',
+          entityType: 'Branch',
+          entityId: id,
+          details: {
+            before: {
+              name: existingBranch.name,
+              address: existingBranch.address,
+              phone: existingBranch.phone,
+              isActive: existingBranch.isActive,
+            },
+            after: {
+              name: updatedBranch.name,
+              address: updatedBranch.address,
+              phone: updatedBranch.phone,
+              isActive: updatedBranch.isActive,
+            },
           },
         },
-      },
-    });
+      });
 
-    return updatedBranch;
+      return updatedBranch;
+    });
   }
 
   /**
@@ -254,26 +258,28 @@ export class BranchService {
 
     const newStatus = !existingBranch.isActive;
 
-    const updatedBranch = await prisma.branch.update({
-      where: { id },
-      data: { isActive: newStatus },
-    });
+    return prisma.$transaction(async (tx) => {
+      const updatedBranch = await tx.branch.update({
+        where: { id },
+        data: { isActive: newStatus },
+      });
 
-    // অডিট লগ তৈরি
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'TOGGLE_BRANCH_STATUS',
-        entityType: 'Branch',
-        entityId: id,
-        details: {
-          previousStatus: existingBranch.isActive,
-          newStatus: updatedBranch.isActive,
+      // অডিট লগ তৈরি
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'TOGGLE_BRANCH_STATUS',
+          entityType: 'Branch',
+          entityId: id,
+          details: {
+            previousStatus: existingBranch.isActive,
+            newStatus: updatedBranch.isActive,
+          },
         },
-      },
-    });
+      });
 
-    return updatedBranch;
+      return updatedBranch;
+    });
   }
 
   /**
@@ -310,26 +316,28 @@ export class BranchService {
       );
     }
 
-    // ৩. সম্পূর্ণ পরিষ্কার থাকলে ডিলিট করা
-    await prisma.branch.delete({
-      where: { id },
-    });
+    return prisma.$transaction(async (tx) => {
+      // ৩. সম্পূর্ণ পরিষ্কার থাকলে ডিলিট করা
+      await tx.branch.delete({
+        where: { id },
+      });
 
-    // অডিট লগ
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'DELETE_BRANCH',
-        entityType: 'Branch',
-        entityId: id,
-        details: {
-          deletedBranchName: existingBranch.name,
-          deletedAt: new Date().toISOString(),
+      // অডিট লগ
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'DELETE_BRANCH',
+          entityType: 'Branch',
+          entityId: id,
+          details: {
+            deletedBranchName: existingBranch.name,
+            deletedAt: new Date().toISOString(),
+          },
         },
-      },
-    });
+      });
 
-    return { id, name: existingBranch.name };
+      return { id, name: existingBranch.name };
+    });
   }
 }
 

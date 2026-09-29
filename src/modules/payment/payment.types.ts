@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import type { PaymentStatus } from '../../../generated/prisma/client.js';
+import { positiveMoneySchema, nonNegativeMoneySchema } from '../../utils/money.js';
+import { Decimal } from '../../lib/prisma.js';
 
 /**
  * পেমেন্ট (Payment) মডিউল — Zod ভ্যালিডেশন স্কিমাস ও টাইপ ডেফিনিশনস
@@ -13,7 +15,7 @@ export const calculateDueSchema = z.object({
 // ২. একটি নির্দিষ্ট খাতার জন্য পেমেন্ট বণ্টন (Khata Allocation) স্কিমা
 export const khataAllocationSchema = z.object({
   khataId: z.string().uuid('Invalid khata ID format (must be UUID)'),
-  amount: z.coerce.number().positive('Allocated amount must be greater than 0'),
+  amount: positiveMoneySchema('Allocated amount must be positive with at most 2 decimal places'),
   note: z.string().trim().max(255).optional(),
 });
 
@@ -22,8 +24,10 @@ export const createPaymentSchema = z
   .object({
     writerId: z.string().uuid('Invalid writer ID format (must be UUID)'),
     khataId: z.string().uuid('Invalid khata ID format (must be UUID)').optional().nullable(),
-    amount: z.coerce.number().positive('Payment amount must be greater than 0'),
-    paidAmount: z.coerce.number().nonnegative('Paid amount cannot be negative').default(0),
+    amount: positiveMoneySchema('Payment amount must be positive with at most 2 decimal places'),
+    paidAmount: nonNegativeMoneySchema('Paid amount cannot be negative and must have at most 2 decimal places').default(
+      new Decimal('0.00')
+    ),
     paymentDate: z
       .string()
       .optional()
@@ -32,16 +36,16 @@ export const createPaymentSchema = z
       }),
     khataAllocations: z.array(khataAllocationSchema).optional().default([]),
   })
-  .refine((data) => data.paidAmount <= data.amount, {
+  .refine((data) => data.paidAmount.lte(data.amount), {
     message: 'Paid amount cannot be greater than total amount',
     path: ['paidAmount'],
   });
 
 // ৪. কিস্তি বা বকেয়া পরিশোধ (Add Payment) স্কিমা
 export const addPaymentSchema = z.object({
-  additionalPaidAmount: z.coerce
-    .number()
-    .positive('Additional paid amount must be greater than 0'),
+  additionalPaidAmount: positiveMoneySchema(
+    'Additional paid amount must be positive with at most 2 decimal places'
+  ),
 });
 
 // ৫. পেমেন্ট তালিকা ফিল্টারিং ও পেজিনেশন কোয়েরি স্কিমা
@@ -92,30 +96,30 @@ export type PaymentQueryDto = {
 };
 
 /**
- * আনপেইড/বকেয়া খাতার আইটেম রেসপন্স ইন্টারফেস
+ * আনপেইড/বকেয়া খাতার আইটেম রেসপন্স ইন্টারফেস (Decimal মানসমূহ string হিসেবে উপস্থাপিত)
  */
 export interface UnpaidKhataItem {
   khataId: string;
   batchNumber: string;
   submittedQty: number;
-  ratePerKhata: number;
-  earnedAmount: number;
-  allocatedPaid: number;
-  dueAmount: number;
+  ratePerKhata: string;
+  earnedAmount: string;
+  allocatedPaid: string;
+  dueAmount: string;
 }
 
 /**
- * বকেয়া ক্যালকুলেশন রেসপন্স ইন্টারফেস
+ * বকেয়া ক্যালকুলেশন রেসপন্স ইন্টারফেস (Decimal মানসমূহ string হিসেবে উপস্থাপিত)
  */
 export interface CalculateDueResponse {
   writerId: string;
   writerName: string;
-  ratePerKhata: number;
+  ratePerKhata: string;
   completedKhatasCount: number;
   totalSubmittedQty: number;
-  totalEarned: number;
-  totalAlreadyPaid: number;
-  netDue: number;
+  totalEarned: string;
+  totalAlreadyPaid: string;
+  netDue: string;
   unpaidKhatas: UnpaidKhataItem[];
 }
 
@@ -132,17 +136,17 @@ export interface WriterPaymentSummaryResponse {
       id: string;
       name: string;
     };
-    ratePerKhata: number;
+    ratePerKhata: string;
   };
   khataMetrics: {
     completedKhatasCount: number;
     totalSubmittedQty: number;
   };
   financialMetrics: {
-    totalEarned: number;
-    totalBilled: number;
-    totalPaid: number;
-    totalDue: number;
+    totalEarned: string;
+    totalBilled: string;
+    totalPaid: string;
+    totalDue: string;
   };
   paymentCounts: {
     total: number;
@@ -152,9 +156,9 @@ export interface WriterPaymentSummaryResponse {
   };
   recentPayments: Array<{
     id: string;
-    amount: number;
-    paidAmount: number;
-    dueAmount: number;
+    amount: string;
+    paidAmount: string;
+    dueAmount: string;
     status: PaymentStatus;
     paymentDate: Date;
   }>;

@@ -1,7 +1,11 @@
 import 'dotenv/config';
 import pg from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '../../generated/prisma/client.js';
+import { PrismaClient, Prisma } from '../../generated/prisma/client.js';
+
+export const Decimal = Prisma.Decimal;
+export type Decimal = Prisma.Decimal;
+export { Prisma };
 
 // Global object-এ PrismaClient এবং Pool সংরক্ষণ করা হচ্ছে যেন dev মোডে hot reload-এ একাধিক কানেকশন না খুলে
 const globalForPrisma = globalThis as unknown as {

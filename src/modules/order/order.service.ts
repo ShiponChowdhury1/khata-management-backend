@@ -1,6 +1,6 @@
-import { prisma } from '../../lib/prisma.js';
+import { prisma, Decimal, Prisma } from '../../lib/prisma.js';
 import { ApiError } from '../../utils/apiError.js';
-import { Prisma } from '../../../generated/prisma/client.js';
+import { formatMoneyString } from '../../utils/money.js';
 import type {
   CreateSubjectPricingDto,
   UpdateSubjectPricingDto,
@@ -18,25 +18,27 @@ import type {
  */
 export class OrderService {
   /**
-   * অর্ডার অবজেক্ট ফরম্যাটিং হেল্পার (Decimal মানসমূহকে নিরাপদ নম্বরে রূপান্তর)
+   * অর্ডার অবজেক্ট ফরম্যাটিং হেল্পার (Decimal মানসমূহকে নিরাপদ ২ দশমিক বিশিষ্ট স্ট্রিংয়ে রূপান্তর)
    */
   // biome-ignore lint/suspicious/noExplicitAny: Order entity formatting
   static formatOrder(order: any) {
     if (!order) return null;
     return {
       ...order,
-      unitPrice: Number(order.unitPrice),
-      totalAmount: Number(order.totalAmount),
+      unitPrice: formatMoneyString(order.unitPrice),
+      totalAmount: formatMoneyString(order.totalAmount),
       ...(order.subjectPricing && {
         subjectPricing: {
           ...order.subjectPricing,
-          pricePerKhata: Number(order.subjectPricing.pricePerKhata),
+          className: order.subjectPricing.class?.name ?? order.subjectPricing.className,
+          subjectName: order.subjectPricing.subject?.name ?? order.subjectPricing.subjectName,
+          pricePerKhata: formatMoneyString(order.subjectPricing.pricePerKhata),
         },
       }),
       ...(order.preferredWriter?.ratePerKhata !== undefined && {
         preferredWriter: {
           ...order.preferredWriter,
-          ratePerKhata: Number(order.preferredWriter.ratePerKhata),
+          ratePerKhata: formatMoneyString(order.preferredWriter.ratePerKhata),
         },
       }),
       ...(Array.isArray(order.khataAssignments) && {
@@ -46,7 +48,7 @@ export class OrderService {
           ...(k.writer?.ratePerKhata !== undefined && {
             writer: {
               ...k.writer,
-              ratePerKhata: Number(k.writer.ratePerKhata),
+              ratePerKhata: formatMoneyString(k.writer.ratePerKhata),
             },
           }),
         })),
@@ -61,18 +63,39 @@ export class OrderService {
   /**
    * ১. পাবলিক ভিউ: সক্রিয় সব সাবজেক্ট ও ক্লাসের মূল্য তালিকা
    */
-  static async getActiveSubjectPricings() {
+  static async getActiveSubjectPricings(classId?: string) {
     const pricings = await prisma.subjectPricing.findMany({
-      where: { isActive: true },
-      orderBy: [{ className: 'asc' }, { subjectName: 'asc' }],
+      where: {
+        isActive: true,
+        ...(classId && { classId }),
+        class: { isActive: true },
+        subject: { isActive: true },
+      },
+      include: {
+        class: {
+          select: { id: true, name: true, displayOrder: true, isActive: true },
+        },
+        subject: {
+          select: { id: true, name: true, isActive: true },
+        },
+      },
+      orderBy: [
+        { class: { displayOrder: 'asc' } },
+        { class: { name: 'asc' } },
+        { subject: { name: 'asc' } },
+      ],
     });
 
     return pricings.map((p) => ({
       id: p.id,
-      subjectName: p.subjectName,
-      className: p.className,
-      pricePerKhata: Number(p.pricePerKhata),
+      classId: p.classId,
+      subjectId: p.subjectId,
+      subjectName: p.subject.name,
+      className: p.class.name,
+      pricePerKhata: formatMoneyString(p.pricePerKhata),
       isActive: p.isActive,
+      class: p.class,
+      subject: p.subject,
     }));
   }
 
@@ -81,135 +104,237 @@ export class OrderService {
    */
   static async getAllSubjectPricings() {
     const pricings = await prisma.subjectPricing.findMany({
-      orderBy: [{ className: 'asc' }, { subjectName: 'asc' }],
+      include: {
+        class: {
+          select: { id: true, name: true, displayOrder: true, isActive: true },
+        },
+        subject: {
+          select: { id: true, name: true, isActive: true },
+        },
+      },
+      orderBy: [
+        { class: { displayOrder: 'asc' } },
+        { class: { name: 'asc' } },
+        { subject: { name: 'asc' } },
+      ],
     });
 
     return pricings.map((p) => ({
       id: p.id,
-      subjectName: p.subjectName,
-      className: p.className,
-      pricePerKhata: Number(p.pricePerKhata),
+      classId: p.classId,
+      subjectId: p.subjectId,
+      subjectName: p.subject.name,
+      className: p.class.name,
+      pricePerKhata: formatMoneyString(p.pricePerKhata),
       isActive: p.isActive,
+      class: p.class,
+      subject: p.subject,
       createdAt: p.createdAt,
       updatedAt: p.updatedAt,
     }));
   }
 
   /**
-   * ৩. নতুন সাবজেক্ট প্রাইসিং তৈরি করা (Admin)
+   * ৩. নতুন সাবজেক্ট প্রাইসিং তৈরি করা (Admin - Atomic Transaction সহ)
    */
   static async createSubjectPricing(dto: CreateSubjectPricingDto, userId?: string) {
-    const subjectName = dto.subjectName.trim();
-    const className = dto.className.trim();
+    const { classId, subjectId } = dto;
+
+    const [academicClass, subject] = await Promise.all([
+      prisma.academicClass.findUnique({ where: { id: classId } }),
+      prisma.subject.findUnique({ where: { id: subjectId } }),
+    ]);
+
+    if (!academicClass) {
+      throw ApiError.notFound('Selected class does not exist');
+    }
+    if (!academicClass.isActive) {
+      throw ApiError.badRequest(
+        `Class '${academicClass.name}' is inactive. Cannot create pricing for an inactive class.`
+      );
+    }
+
+    if (!subject) {
+      throw ApiError.notFound('Selected subject does not exist');
+    }
+    if (!subject.isActive) {
+      throw ApiError.badRequest(
+        `Subject '${subject.name}' is inactive. Cannot create pricing for an inactive subject.`
+      );
+    }
 
     const existing = await prisma.subjectPricing.findUnique({
       where: {
-        subjectName_className: {
-          subjectName,
-          className,
+        classId_subjectId: {
+          classId,
+          subjectId,
         },
       },
     });
 
     if (existing) {
       throw ApiError.conflict(
-        `Pricing for subject '${subjectName}' in class '${className}' already exists`
+        `Pricing for subject '${subject.name}' in class '${academicClass.name}' already exists`
       );
     }
 
-    const pricing = await prisma.subjectPricing.create({
-      data: {
-        subjectName,
-        className,
-        pricePerKhata: new Prisma.Decimal(dto.pricePerKhata.toFixed(2)),
-        isActive: dto.isActive ?? true,
-      },
-    });
+    const pricePerKhataDec = new Decimal(dto.pricePerKhata);
 
-    if (userId) {
-      await prisma.auditLog.create({
+    return await prisma.$transaction(async (tx) => {
+      const pricing = await tx.subjectPricing.create({
         data: {
-          userId,
-          action: 'CREATE_SUBJECT_PRICING',
-          entityType: 'SubjectPricing',
-          entityId: pricing.id,
-          details: {
-            subjectName: pricing.subjectName,
-            className: pricing.className,
-            pricePerKhata: Number(pricing.pricePerKhata),
-            isActive: pricing.isActive,
-          },
+          classId,
+          subjectId,
+          pricePerKhata: pricePerKhataDec,
+          isActive: dto.isActive ?? true,
+        },
+        include: {
+          class: true,
+          subject: true,
         },
       });
-    }
 
-    return {
-      ...pricing,
-      pricePerKhata: Number(pricing.pricePerKhata),
-    };
+      if (userId) {
+        await tx.auditLog.create({
+          data: {
+            userId,
+            action: 'CREATE_SUBJECT_PRICING',
+            entityType: 'SubjectPricing',
+            entityId: pricing.id,
+            details: {
+              classId: pricing.classId,
+              className: pricing.class.name,
+              subjectId: pricing.subjectId,
+              subjectName: pricing.subject.name,
+              pricePerKhata: formatMoneyString(pricing.pricePerKhata),
+              isActive: pricing.isActive,
+            },
+          },
+        });
+      }
+
+      return {
+        id: pricing.id,
+        classId: pricing.classId,
+        subjectId: pricing.subjectId,
+        className: pricing.class.name,
+        subjectName: pricing.subject.name,
+        pricePerKhata: formatMoneyString(pricing.pricePerKhata),
+        isActive: pricing.isActive,
+        class: pricing.class,
+        subject: pricing.subject,
+        createdAt: pricing.createdAt,
+        updatedAt: pricing.updatedAt,
+      };
+    });
   }
 
   /**
-   * ৪. সাবজেক্ট প্রাইসিং আপডেট করা (Admin)
+   * ৪. সাবজেক্ট প্রাইসিং আপডেট করা (Admin - Atomic Transaction সহ)
    */
   static async updateSubjectPricing(
     id: string,
     dto: UpdateSubjectPricingDto,
     userId?: string
   ) {
-    const pricing = await prisma.subjectPricing.findUnique({ where: { id } });
+    const pricing = await prisma.subjectPricing.findUnique({
+      where: { id },
+      include: { class: true, subject: true },
+    });
     if (!pricing) {
       throw ApiError.notFound(`Subject pricing not found with ID: ${id}`);
     }
 
-    const subjectName = dto.subjectName?.trim() || pricing.subjectName;
-    const className = dto.className?.trim() || pricing.className;
+    const targetClassId = dto.classId || pricing.classId;
+    const targetSubjectId = dto.subjectId || pricing.subjectId;
 
-    if (subjectName !== pricing.subjectName || className !== pricing.className) {
-      const conflict = await prisma.subjectPricing.findUnique({
-        where: {
-          subjectName_className: { subjectName, className },
-        },
-      });
-      if (conflict && conflict.id !== id) {
-        throw ApiError.conflict(
-          `Pricing for subject '${subjectName}' in class '${className}' already exists`
-        );
-      }
+    if (dto.classId && dto.classId !== pricing.classId) {
+      const targetClass = await prisma.academicClass.findUnique({ where: { id: dto.classId } });
+      if (!targetClass) throw ApiError.notFound('Selected class does not exist');
+      if (!targetClass.isActive) throw ApiError.badRequest(`Class '${targetClass.name}' is inactive.`);
     }
 
-    const updated = await prisma.subjectPricing.update({
-      where: { id },
-      data: {
-        ...(dto.subjectName && { subjectName }),
-        ...(dto.className && { className }),
-        ...(dto.pricePerKhata !== undefined && {
-          pricePerKhata: new Prisma.Decimal(dto.pricePerKhata.toFixed(2)),
-        }),
-        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
-      },
-    });
+    if (dto.subjectId && dto.subjectId !== pricing.subjectId) {
+      const targetSubject = await prisma.subject.findUnique({ where: { id: dto.subjectId } });
+      if (!targetSubject) throw ApiError.notFound('Selected subject does not exist');
+      if (!targetSubject.isActive) throw ApiError.badRequest(`Subject '${targetSubject.name}' is inactive.`);
+    }
 
-    if (userId) {
-      await prisma.auditLog.create({
-        data: {
-          userId,
-          action: 'UPDATE_SUBJECT_PRICING',
-          entityType: 'SubjectPricing',
-          entityId: updated.id,
-          details: {
-            previousPrice: Number(pricing.pricePerKhata),
-            newPrice: Number(updated.pricePerKhata),
-            isActive: updated.isActive,
+    if (targetClassId !== pricing.classId || targetSubjectId !== pricing.subjectId) {
+      const conflict = await prisma.subjectPricing.findUnique({
+        where: {
+          classId_subjectId: {
+            classId: targetClassId,
+            subjectId: targetSubjectId,
           },
         },
       });
+      if (conflict && conflict.id !== id) {
+        throw ApiError.conflict('Pricing for this class and subject combination already exists');
+      }
     }
 
-    return {
-      ...updated,
-      pricePerKhata: Number(updated.pricePerKhata),
-    };
+    const pricePerKhataDec =
+      dto.pricePerKhata !== undefined ? new Decimal(dto.pricePerKhata) : undefined;
+
+    return await prisma.$transaction(async (tx) => {
+      const updated = await tx.subjectPricing.update({
+        where: { id },
+        data: {
+          ...(dto.classId && { classId: dto.classId }),
+          ...(dto.subjectId && { subjectId: dto.subjectId }),
+          ...(pricePerKhataDec !== undefined && { pricePerKhata: pricePerKhataDec }),
+          ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+        },
+        include: {
+          class: true,
+          subject: true,
+        },
+      });
+
+      if (userId) {
+        await tx.auditLog.create({
+          data: {
+            userId,
+            action: 'UPDATE_SUBJECT_PRICING',
+            entityType: 'SubjectPricing',
+            entityId: updated.id,
+            details: {
+              previous: {
+                classId: pricing.classId,
+                className: pricing.class.name,
+                subjectId: pricing.subjectId,
+                subjectName: pricing.subject.name,
+                pricePerKhata: formatMoneyString(pricing.pricePerKhata),
+                isActive: pricing.isActive,
+              },
+              updated: {
+                classId: updated.classId,
+                className: updated.class.name,
+                subjectId: updated.subjectId,
+                subjectName: updated.subject.name,
+                pricePerKhata: formatMoneyString(updated.pricePerKhata),
+                isActive: updated.isActive,
+              },
+            },
+          },
+        });
+      }
+
+      return {
+        id: updated.id,
+        classId: updated.classId,
+        subjectId: updated.subjectId,
+        className: updated.class.name,
+        subjectName: updated.subject.name,
+        pricePerKhata: formatMoneyString(updated.pricePerKhata),
+        isActive: updated.isActive,
+        class: updated.class,
+        subject: updated.subject,
+        createdAt: updated.createdAt,
+        updatedAt: updated.updatedAt,
+      };
+    });
   }
 
   // ==========================================
@@ -249,15 +374,19 @@ export class OrderService {
     // সাবজেক্ট ও শ্রেণি ভিত্তিক নির্ধারিত মূল্য যাচাই
     const pricing = await prisma.subjectPricing.findUnique({
       where: { id: dto.subjectPricingId },
+      include: {
+        class: true,
+        subject: true,
+      },
     });
 
     if (!pricing) {
       throw ApiError.notFound(`Subject pricing not found with ID: ${dto.subjectPricingId}`);
     }
 
-    if (!pricing.isActive) {
+    if (!pricing.isActive || !pricing.class.isActive || !pricing.subject.isActive) {
       throw ApiError.badRequest(
-        `Practical khata for '${pricing.subjectName} (${pricing.className})' is currently unavailable`
+        `Practical khata for '${pricing.subject.name} (${pricing.class.name})' is currently unavailable`
       );
     }
 
@@ -312,7 +441,12 @@ export class OrderService {
           paymentStatus: 'PENDING',
         },
         include: {
-          subjectPricing: true,
+          subjectPricing: {
+            include: {
+              class: true,
+              subject: true,
+            },
+          },
           preferredWriter: {
             select: {
               id: true,
@@ -333,11 +467,11 @@ export class OrderService {
             orderNumber: order.orderNumber,
             customerName: order.customerName,
             customerPhone: order.customerPhone,
-            subject: pricing.subjectName,
-            className: pricing.className,
+            subject: pricing.subject.name,
+            className: pricing.class.name,
             quantity: order.quantity,
-            unitPrice: Number(unitPrice),
-            totalAmount: Number(totalAmount),
+            unitPrice: formatMoneyString(unitPrice),
+            totalAmount: formatMoneyString(totalAmount),
             preferredDistrict: order.preferredDistrict,
             preferredWriterId: order.preferredWriterId,
           },
@@ -365,9 +499,9 @@ export class OrderService {
       },
       include: {
         subjectPricing: {
-          select: {
-            subjectName: true,
-            className: true,
+          include: {
+            class: true,
+            subject: true,
           },
         },
         preferredWriter: {
@@ -414,10 +548,10 @@ export class OrderService {
       customerName: order.customerName,
       customerPhone: order.customerPhone,
       deliveryAddress: order.customerAddress,
-      subject: `${order.subjectPricing.subjectName} (${order.subjectPricing.className})`,
+      subject: `${order.subjectPricing.subject.name} (${order.subjectPricing.class.name})`,
       quantity: order.quantity,
-      unitPrice: Number(order.unitPrice),
-      totalAmount: Number(order.totalAmount),
+      unitPrice: formatMoneyString(order.unitPrice),
+      totalAmount: formatMoneyString(order.totalAmount),
       status: order.status,
       paymentStatus: order.paymentStatus,
       preferredDistrict: order.preferredDistrict,
@@ -481,7 +615,9 @@ export class OrderService {
         take: limit,
         orderBy: { orderDate: 'desc' },
         include: {
-          subjectPricing: true,
+          subjectPricing: {
+            include: { class: true, subject: true },
+          },
           preferredWriter: {
             select: { id: true, name: true, district: true, phone: true },
           },
@@ -515,7 +651,9 @@ export class OrderService {
     const order = await prisma.order.findUnique({
       where: { id },
       include: {
-        subjectPricing: true,
+        subjectPricing: {
+          include: { class: true, subject: true },
+        },
         preferredWriter: {
           select: { id: true, name: true, district: true, phone: true, ratePerKhata: true },
         },
@@ -560,7 +698,9 @@ export class OrderService {
           confirmedAt: new Date(),
         },
         include: {
-          subjectPricing: true,
+          subjectPricing: {
+            include: { class: true, subject: true },
+          },
           preferredWriter: true,
           khataAssignments: true,
         },
@@ -717,7 +857,9 @@ export class OrderService {
           assignedAt: new Date(),
         },
         include: {
-          subjectPricing: true,
+          subjectPricing: {
+            include: { class: true, subject: true },
+          },
           preferredWriter: true,
           khataAssignments: {
             include: {
@@ -792,7 +934,9 @@ export class OrderService {
           }),
         },
         include: {
-          subjectPricing: true,
+          subjectPricing: {
+            include: { class: true, subject: true },
+          },
           preferredWriter: true,
           khataAssignments: {
             include: {
@@ -829,7 +973,9 @@ export class OrderService {
     const order = await prisma.order.findUnique({
       where: { id },
       include: {
-        subjectPricing: true,
+        subjectPricing: {
+          include: { class: true, subject: true },
+        },
         preferredWriter: {
           select: { id: true, name: true, district: true },
         },
@@ -884,7 +1030,7 @@ export class OrderService {
       customerName: order.customerName,
       customerPhone: order.customerPhone,
       deliveryAddress: order.customerAddress,
-      subject: `${order.subjectPricing.subjectName} (${order.subjectPricing.className})`,
+      subject: `${order.subjectPricing.subject.name} (${order.subjectPricing.class.name})`,
       totalQuantity,
       totalAssignedQty,
       totalSubmittedQty,
@@ -957,7 +1103,9 @@ export class OrderService {
           deliveredAt: new Date(),
         },
         include: {
-          subjectPricing: true,
+          subjectPricing: {
+            include: { class: true, subject: true },
+          },
           preferredWriter: true,
           khataAssignments: {
             include: {
@@ -976,7 +1124,7 @@ export class OrderService {
           entityId: order.id,
           details: {
             orderNumber: order.orderNumber,
-            collectedAmount: Number(order.totalAmount),
+            collectedAmount: formatMoneyString(order.totalAmount),
             status: 'DELIVERED',
             paymentStatus: 'COLLECTED',
             writersCount: order.khataAssignments.length,
@@ -989,10 +1137,106 @@ export class OrderService {
   }
 
   /**
-   * ১৫. অর্ডার বাতিল করা (Cancel Order)
+   * ১৫. অর্ডারের জন্য উপযুক্ত রাইটার সাজেশন (Suggest Writers with Workload)
+   * - অর্ডারের preferredDistrict (না থাকলে preferredWriterId-র জেলা) অনুযায়ী সক্রিয় রাইটারদের লিস্ট
+   * - প্রতিটি রাইটারের নন-COMPLETED খাতার পেন্ডিং পরিমাণ ও সক্রিয় খাতার সংখ্যা (Workload) হিসাব
+   * - কম Workload আগে সাজানো (Ascending order)
+   * - preferredWriterId থাকলে তাকে চিহ্নিত করা
+   */
+  static async suggestWriters(id: string) {
+    const order = await prisma.order.findUnique({
+      where: { id },
+      include: {
+        preferredWriter: {
+          select: { id: true, name: true, district: true },
+        },
+      },
+    });
+
+    if (!order) {
+      throw ApiError.notFound(`Order not found with ID: ${id}`);
+    }
+
+    // টার্গেট জেলা নির্ধারণ
+    const targetDistrict = order.preferredDistrict || order.preferredWriter?.district || null;
+
+    const writers = await prisma.writer.findMany({
+      where: {
+        isActive: true,
+        ...(targetDistrict && { district: targetDistrict }),
+      },
+      include: {
+        branch: { select: { id: true, name: true, phone: true } },
+        khatas: {
+          where: { status: { not: 'COMPLETED' } },
+          select: { id: true, receivedQty: true, submittedQty: true, status: true },
+        },
+      },
+    });
+
+    const suggestedWriters = writers.map((w) => {
+      const activeKhatasCount = w.khatas.length;
+      const pendingKhataQty = w.khatas.reduce(
+        (sum, k) => sum + Math.max(0, k.receivedQty - k.submittedQty),
+        0
+      );
+      const isPreferred = order.preferredWriterId === w.id;
+
+      return {
+        id: w.id,
+        name: w.name,
+        phone: w.phone,
+        email: w.email,
+        district: w.district,
+        ratePerKhata: formatMoneyString(w.ratePerKhata),
+        branch: w.branch,
+        workload: {
+          activeKhatasCount,
+          pendingKhataQty,
+        },
+        isPreferredWriter: isPreferred,
+      };
+    });
+
+    // কম workload আগে দেখাও
+    suggestedWriters.sort((a, b) => {
+      if (a.workload.pendingKhataQty !== b.workload.pendingKhataQty) {
+        return a.workload.pendingKhataQty - b.workload.pendingKhataQty;
+      }
+      return a.workload.activeKhatasCount - b.workload.activeKhatasCount;
+    });
+
+    return {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      orderQuantity: order.quantity,
+      targetDistrict,
+      preferredWriterId: order.preferredWriterId,
+      totalSuggestedWriters: suggestedWriters.length,
+      suggestedWriters,
+    };
+  }
+
+  /**
+   * ১৬. অর্ডার বাতিল করা (Cancel Order with Safety Guards)
+   * - কোনো Khata-তে submittedQty > 0 থাকলে বাতিল ব্লক করে এরর দেবে
+   * - কোনো Khata-র সাথে পেমেন্ট রেকর্ড থাকলে বাতিল ব্লক করবে
+   * - কোনো খাতা জমা না হয়ে থাকলে ট্রানজ্যাকশনে অর্ডার CANCELLED করবে এবং সব DISTRIBUTED Khata ডিলিট করবে
    */
   static async cancelOrder(id: string, dto: CancelOrderDto, userId: string) {
-    const order = await prisma.order.findUnique({ where: { id } });
+    const order = await prisma.order.findUnique({
+      where: { id },
+      include: {
+        khataAssignments: {
+          include: {
+            payments: true,
+            paymentItems: true,
+            writer: { select: { id: true, name: true } },
+          },
+        },
+      },
+    });
+
     if (!order) {
       throw ApiError.notFound(`Order not found with ID: ${id}`);
     }
@@ -1005,7 +1249,41 @@ export class OrderService {
       throw ApiError.badRequest('Order is already cancelled');
     }
 
+    // যদি অর্ডার ইতিমধ্যে রাইটারদের অ্যাসাইন করা হয়ে থাকে
+    if (order.khataAssignments && order.khataAssignments.length > 0) {
+      // ১. কোনো Khata-তে জমা শুরু হয়ে থাকলে বাতিল ব্লক করা
+      const partiallySubmitted = order.khataAssignments.filter((k) => k.submittedQty > 0);
+      if (partiallySubmitted.length > 0) {
+        const details = partiallySubmitted
+          .map((k) => `Batch '${k.batchNumber}' (Writer: ${k.writer.name}, Submitted: ${k.submittedQty})`)
+          .join(', ');
+        throw ApiError.badRequest(
+          `Cannot cancel order: Khatas have already been partially or fully submitted by writers [${details}]. Please settle or complete the order instead of cancelling.`
+        );
+      }
+
+      // ২. কোনো Khata-র সাথে Payment বা PaymentItem যুক্ত থাকলে বাতিল ব্লক করা
+      const withPayments = order.khataAssignments.filter(
+        (k) => k.payments.length > 0 || k.paymentItems.length > 0
+      );
+      if (withPayments.length > 0) {
+        throw ApiError.badRequest(
+          'Cannot cancel order: Payment records are already linked to the assigned khatas. Please settle the accounts before cancellation.'
+        );
+      }
+    }
+
     return await prisma.$transaction(async (tx) => {
+      // সেই অর্ডারের সব DISTRIBUTED Khata ডিলিট করা
+      if (order.khataAssignments && order.khataAssignments.length > 0) {
+        await tx.khata.deleteMany({
+          where: {
+            orderId: order.id,
+            status: 'DISTRIBUTED',
+          },
+        });
+      }
+
       const updated = await tx.order.update({
         where: { id },
         data: {
@@ -1013,7 +1291,9 @@ export class OrderService {
           cancelReason: dto.note.trim(),
         },
         include: {
-          subjectPricing: true,
+          subjectPricing: {
+            include: { class: true, subject: true },
+          },
           preferredWriter: true,
           khataAssignments: true,
         },
@@ -1029,6 +1309,7 @@ export class OrderService {
             orderNumber: order.orderNumber,
             status: 'CANCELLED',
             cancelReason: dto.note.trim(),
+            deletedKhataCount: order.khataAssignments?.length || 0,
           },
         },
       });

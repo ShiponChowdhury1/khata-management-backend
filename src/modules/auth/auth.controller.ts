@@ -14,7 +14,8 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
     throw ApiError.badRequest('Name, email, and password are required fields');
   }
 
-  const result = await AuthService.register({ name, email, password, role });
+  const creatorUserId = req.user?.userId;
+  const result = await AuthService.register({ name, email, password, role }, creatorUserId);
   sendSuccess(res, 201, 'User registered successfully', result);
 });
 
@@ -27,6 +28,17 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
 
   const result = await AuthService.login({ email, password });
   sendSuccess(res, 200, 'Login successful', result);
+});
+
+export const refreshToken = asyncHandler(async (req: Request, res: Response) => {
+  const { refreshToken: token } = req.body;
+
+  if (!token) {
+    throw ApiError.badRequest('Refresh token is required');
+  }
+
+  const result = await AuthService.refreshAccessToken(token);
+  sendSuccess(res, 200, 'Access token refreshed successfully', result);
 });
 
 export const getMe = asyncHandler(async (req: Request, res: Response) => {

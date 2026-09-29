@@ -6,43 +6,31 @@ import { BANGLADESH_DISTRICTS } from '../../constants/districts.js';
  * অর্ডার (Order) ও সাবজেক্ট প্রাইসিং মডিউল — Zod ভ্যালিডেশন স্কিমাস ও টাইপ ডেফিনিশনস
  */
 
+import { positiveMoneySchema } from '../../utils/money.js';
+
 // ১. সাবজেক্ট প্রাইসিং তৈরি স্কিমা (Admin)
 export const createSubjectPricingSchema = z.object({
-  subjectName: z
-    .string()
-    .trim()
-    .min(2, 'Subject name must be at least 2 characters')
-    .max(100, 'Subject name cannot exceed 100 characters'),
-  className: z
-    .string()
-    .trim()
-    .min(2, 'Class name must be at least 2 characters (e.g. SSC, HSC, JSC)')
-    .max(50, 'Class name cannot exceed 50 characters'),
-  pricePerKhata: z.coerce
-    .number()
-    .positive('Price per khata must be greater than 0'),
+  classId: z.string().uuid('Invalid class ID format'),
+  subjectId: z.string().uuid('Invalid subject ID format'),
+  pricePerKhata: positiveMoneySchema('Price per khata must be positive with at most 2 decimal places'),
   isActive: z.boolean().optional().default(true),
 });
 
 // ২. সাবজেক্ট প্রাইসিং আপডেট স্কিমা (Admin)
-export const updateSubjectPricingSchema = z.object({
-  subjectName: z
-    .string()
-    .trim()
-    .min(2, 'Subject name must be at least 2 characters')
-    .max(100)
-    .optional(),
-  className: z
-    .string()
-    .trim()
-    .min(2, 'Class name must be at least 2 characters')
-    .max(50)
-    .optional(),
-  pricePerKhata: z.coerce
-    .number()
-    .positive('Price per khata must be greater than 0')
-    .optional(),
-  isActive: z.boolean().optional(),
+export const updateSubjectPricingSchema = z
+  .object({
+    classId: z.string().uuid('Invalid class ID format').optional(),
+    subjectId: z.string().uuid('Invalid subject ID format').optional(),
+    pricePerKhata: positiveMoneySchema('Price per khata must be positive with at most 2 decimal places').optional(),
+    isActive: z.boolean().optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, {
+    message: 'At least one field must be provided for update',
+  });
+
+// ২.১ পাবলিক সাবজেক্ট প্রাইসিং ফিল্টার স্কিমা
+export const publicSubjectPricingQuerySchema = z.object({
+  classId: z.string().uuid('Invalid class ID format').optional(),
 });
 
 // ৩. পাবলিক জেলাভিত্তিক লেখক খোঁজার কুয়েরি স্কিমা
@@ -177,6 +165,7 @@ export const subjectPricingIdParamSchema = z.object({
  */
 export type CreateSubjectPricingDto = z.infer<typeof createSubjectPricingSchema>;
 export type UpdateSubjectPricingDto = z.infer<typeof updateSubjectPricingSchema>;
+export type PublicSubjectPricingQueryDto = z.infer<typeof publicSubjectPricingQuerySchema>;
 export type WritersByDistrictQueryDto = z.infer<typeof writersByDistrictQuerySchema>;
 export type CreatePublicOrderDto = z.infer<typeof createPublicOrderSchema>;
 export type TrackOrderQueryDto = z.infer<typeof trackOrderQuerySchema>;

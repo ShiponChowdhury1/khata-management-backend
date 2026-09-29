@@ -2,10 +2,12 @@ import type { Request, Response } from 'express';
 import { OrderService } from './order.service.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { sendSuccess } from '../../utils/apiResponse.js';
+import { ClassService } from '../class/class.service.js';
 import type {
   TrackOrderQueryDto,
   OrderQueryDto,
   WritersByDistrictQueryDto,
+  PublicSubjectPricingQueryDto,
 } from './order.types.js';
 
 /**
@@ -16,9 +18,16 @@ import type {
 // পাবলিক কন্ট্রোলার হ্যান্ডলারস (Public Endpoints)
 // ==========================================
 
+// ০. পাবলিক সক্রিয় শ্রেণি তালিকা (GET /api/public/classes)
+export const getPublicClasses = asyncHandler(async (_req: Request, res: Response) => {
+  const classes = await ClassService.getActiveClasses();
+  sendSuccess(res, 200, 'Public academic classes retrieved successfully', classes);
+});
+
 // ১. পাবলিক বিষয় ও ফি তালিকা (GET /api/public/subject-pricing)
-export const getPublicSubjectPricings = asyncHandler(async (_req: Request, res: Response) => {
-  const pricings = await OrderService.getActiveSubjectPricings();
+export const getPublicSubjectPricings = asyncHandler(async (req: Request, res: Response) => {
+  const { classId } = req.query as unknown as PublicSubjectPricingQueryDto;
+  const pricings = await OrderService.getActiveSubjectPricings(classId);
   sendSuccess(res, 200, 'Subject pricings retrieved successfully', pricings);
 });
 
@@ -63,6 +72,13 @@ export const getOrderById = asyncHandler(async (req: Request, res: Response) => 
   const orderId = req.params.id as string;
   const order = await OrderService.getOrderById(orderId);
   sendSuccess(res, 200, 'Order details retrieved successfully', order);
+});
+
+// ৬.১ অর্ডারের জন্য উপযুক্ত রাইটার সাজেশন (GET /api/orders/:id/suggest-writers)
+export const suggestWriters = asyncHandler(async (req: Request, res: Response) => {
+  const orderId = req.params.id as string;
+  const result = await OrderService.suggestWriters(orderId);
+  sendSuccess(res, 200, 'Suggested writers with workload retrieved successfully', result);
 });
 
 // ৭. অর্ডার কনফার্ম করা (PATCH /api/orders/:id/confirm)

@@ -1,6 +1,6 @@
-import { prisma } from '../../lib/prisma.js';
+import { prisma, Decimal, Prisma } from '../../lib/prisma.js';
 import { ApiError } from '../../utils/apiError.js';
-import { Prisma } from '../../../generated/prisma/client.js';
+import { formatMoneyString } from '../../utils/money.js';
 import type { PaymentStatus } from '../../../generated/prisma/client.js';
 import type {
   CreatePaymentDto,
@@ -16,20 +16,20 @@ import type {
  */
 export class PaymentService {
   /**
-   * পেমেন্ট অবজেক্ট ফরম্যাটিং হেল্পার (Decimal মানসমূহকে নিরাপদ নম্বরে রূপান্তর)
+   * পেমেন্ট অবজেক্ট ফরম্যাটিং হেল্পার (Decimal মানসমূহকে নিরাপদ ২ দশমিক বিশিষ্ট স্ট্রিংয়ে রূপান্তর)
    */
   // biome-ignore lint/suspicious/noExplicitAny: Format database entity with Decimal fields
   static formatPayment(payment: any) {
     if (!payment) return null;
     return {
       ...payment,
-      amount: Number(payment.amount),
-      paidAmount: Number(payment.paidAmount),
-      dueAmount: Number(payment.dueAmount),
+      amount: formatMoneyString(payment.amount),
+      paidAmount: formatMoneyString(payment.paidAmount),
+      dueAmount: formatMoneyString(payment.dueAmount),
       ...(payment.writer?.ratePerKhata !== undefined && {
         writer: {
           ...payment.writer,
-          ratePerKhata: Number(payment.writer.ratePerKhata),
+          ratePerKhata: formatMoneyString(payment.writer.ratePerKhata),
         },
       }),
       // biome-ignore lint/suspicious/noExplicitAny: Payment item formatting
@@ -37,7 +37,7 @@ export class PaymentService {
         // biome-ignore lint/suspicious/noExplicitAny: Payment item formatting
         paymentItems: payment.paymentItems.map((item: any) => ({
           ...item,
-          amount: Number(item.amount),
+          amount: formatMoneyString(item.amount),
         })),
       }),
     };
@@ -56,7 +56,7 @@ export class PaymentService {
       throw ApiError.notFound(`Writer not found with ID: ${writerId}`);
     }
 
-    const ratePerKhata = new Prisma.Decimal(writer.ratePerKhata);
+    const ratePerKhata = new Decimal(writer.ratePerKhata);
 
     // লেখকের সব COMPLETED খাতা ও তার সাথে লিঙ্কড পেমেন্ট আইটেম সংগ্রহ
     const completedKhatas = await prisma.khata.findMany({
@@ -90,8 +90,10 @@ export class PaymentService {
       _sum: { paidAmount: true },
     });
 
-    const totalAlreadyPaid = paymentsAgg._sum.paidAmount ?? new Prisma.Decimal(0);
-    const netDue = Prisma.Decimal.max(0, totalEarned.minus(totalAlreadyPaid));
+    const totalAlreadyPaid = paymentsAgg._sum.paidAmount
+      ? new Decimal(paymentsAgg._sum.paidAmount)
+      : new Decimal(0);
+    const netDue = Decimal.max(0, totalEarned.minus(totalAlreadyPaid));
 
     // প্রতিটি কমপ্লিটেড খাতার বিপরীতে পেমেন্ট বণ্টন যাচাই করে বকেয়া খাতার তালিকা তৈরি
     const unpaidKhatas: UnpaidKhataItem[] = [];
@@ -101,27 +103,27 @@ export class PaymentService {
 
       // PaymentItem-এর মাধ্যমে এই খাতায় বরাদ্দকৃত টাকা
       const allocatedViaItems = khata.paymentItems.reduce(
-        (sum, item) => sum.plus(item.amount),
-        new Prisma.Decimal(0)
+        (sum, item) => sum.plus(new Decimal(item.amount)),
+        new Decimal(0)
       );
 
       // সরাসরি পেমেন্ট (যাতে আলাদা paymentItem নেই) থেকে প্রাপ্ত টাকা
       const directPaid = khata.payments
         .filter((p) => p.paymentItems.length === 0)
-        .reduce((sum, p) => sum.plus(p.paidAmount), new Prisma.Decimal(0));
+        .reduce((sum, p) => sum.plus(new Decimal(p.paidAmount)), new Decimal(0));
 
       const totalPaidForKhata = allocatedViaItems.plus(directPaid);
-      const dueForKhata = Prisma.Decimal.max(0, khataEarned.minus(totalPaidForKhata));
+      const dueForKhata = Decimal.max(0, khataEarned.minus(totalPaidForKhata));
 
-      if (dueForKhata.greaterThan(0)) {
+      if (dueForKhata.gt(0)) {
         unpaidKhatas.push({
           khataId: khata.id,
           batchNumber: khata.batchNumber,
           submittedQty: khata.submittedQty,
-          ratePerKhata: Number(ratePerKhata),
-          earnedAmount: Number(khataEarned.toFixed(2)),
-          allocatedPaid: Number(totalPaidForKhata.toFixed(2)),
-          dueAmount: Number(dueForKhata.toFixed(2)),
+          ratePerKhata: ratePerKhata.toFixed(2),
+          earnedAmount: khataEarned.toFixed(2),
+          allocatedPaid: totalPaidForKhata.toFixed(2),
+          dueAmount: dueForKhata.toFixed(2),
         });
       }
     }
@@ -129,18 +131,18 @@ export class PaymentService {
     return {
       writerId: writer.id,
       writerName: writer.name,
-      ratePerKhata: Number(ratePerKhata),
+      ratePerKhata: ratePerKhata.toFixed(2),
       completedKhatasCount: completedKhatas.length,
       totalSubmittedQty,
-      totalEarned: Number(totalEarned.toFixed(2)),
-      totalAlreadyPaid: Number(totalAlreadyPaid.toFixed(2)),
-      netDue: Number(netDue.toFixed(2)),
+      totalEarned: totalEarned.toFixed(2),
+      totalAlreadyPaid: totalAlreadyPaid.toFixed(2),
+      netDue: netDue.toFixed(2),
       unpaidKhatas,
     };
   }
 
   /**
-   * ২. নতুন পেমেন্ট রেকর্ড করা (Atomic Transaction সহ)
+   * ২. নতুন পেমেন্ট রেকর্ড করা (Atomic Transaction ও Overpayment Guard সহ)
    */
   static async createPayment(dto: CreatePaymentDto, userId: string) {
     // লেখক বিদ্যমান কি না যাচাই
@@ -153,13 +155,23 @@ export class PaymentService {
       throw ApiError.notFound(`Writer not found with ID: ${dto.writerId}`);
     }
 
-    const amountDec = new Prisma.Decimal(dto.amount);
-    const paidAmountDec = new Prisma.Decimal(dto.paidAmount ?? 0);
+    const amountDec = new Decimal(dto.amount);
+    const paidAmountDec = new Decimal(dto.paidAmount ?? 0);
     const dueAmountDec = amountDec.minus(paidAmountDec);
+
+    // Overpayment Guard: লেখকের বর্তমান বকেয়া যাচাই
+    const dueInfo = await PaymentService.calculateDue(dto.writerId);
+    const netDue = new Decimal(dueInfo.netDue);
+
+    if (paidAmountDec.gt(netDue)) {
+      throw ApiError.badRequest(
+        `Overpayment rejected: Paid amount (৳${paidAmountDec.toFixed(2)}) exceeds writer's total net due amount (৳${netDue.toFixed(2)}).`
+      );
+    }
 
     // স্ট্যাটাস নির্ধারণ (PAID / DUE / PARTIAL)
     let status: PaymentStatus = 'PARTIAL';
-    if (paidAmountDec.equals(amountDec)) {
+    if (paidAmountDec.eq(amountDec)) {
       status = 'PAID';
     } else if (paidAmountDec.isZero()) {
       status = 'DUE';
@@ -167,17 +179,28 @@ export class PaymentService {
 
     // একাধিক খাতায় পেমেন্ট বণ্টন (khataAllocations) থাকলে ভ্যালিডেশন
     if (dto.khataAllocations && dto.khataAllocations.length > 0) {
-      let totalAllocated = new Prisma.Decimal(0);
+      let totalAllocated = new Decimal(0);
       for (const alloc of dto.khataAllocations) {
-        const allocDec = new Prisma.Decimal(alloc.amount);
+        const allocDec = new Decimal(alloc.amount);
         if (allocDec.lte(0)) {
           throw ApiError.badRequest('Allocation amount must be greater than 0');
         }
         totalAllocated = totalAllocated.plus(allocDec);
+
+        // নির্দিষ্ট খাতার বকেয়ার চেয়ে বেশি বরাদ্দ প্রতিরোধ (Overpayment per khata)
+        const unpaidKhata = dueInfo.unpaidKhatas.find((k) => k.khataId === alloc.khataId);
+        if (unpaidKhata) {
+          const khataDue = new Decimal(unpaidKhata.dueAmount);
+          if (allocDec.gt(khataDue)) {
+            throw ApiError.badRequest(
+              `Overpayment rejected for khata '${unpaidKhata.batchNumber}': Allocated amount (৳${allocDec.toFixed(2)}) exceeds remaining khata due (৳${khataDue.toFixed(2)}).`
+            );
+          }
+        }
       }
 
       // ভ্যালিডেশন: খাতা বরাদ্দের যোগফল মোট পেমেন্ট অ্যামাউন্টের বেশি হতে পারবে না
-      if (totalAllocated.greaterThan(amountDec)) {
+      if (totalAllocated.gt(amountDec)) {
         throw ApiError.badRequest(
           `Total allocated amount (৳${totalAllocated.toFixed(2)}) cannot exceed payment amount (৳${amountDec.toFixed(2)})`
         );
@@ -219,6 +242,16 @@ export class PaymentService {
           `Khata '${directKhata.batchNumber}' does not belong to writer '${writer.name}'`
         );
       }
+
+      const unpaidKhata = dueInfo.unpaidKhatas.find((k) => k.khataId === dto.khataId);
+      if (unpaidKhata) {
+        const khataDue = new Decimal(unpaidKhata.dueAmount);
+        if (paidAmountDec.gt(khataDue)) {
+          throw ApiError.badRequest(
+            `Overpayment rejected for khata '${directKhata.batchNumber}': Paid amount (৳${paidAmountDec.toFixed(2)}) exceeds remaining khata due (৳${khataDue.toFixed(2)}).`
+          );
+        }
+      }
     }
 
     // একক atomic ট্রানজ্যাকশনে Payment, PaymentItem এবং AuditLog সংরক্ষণ
@@ -241,7 +274,7 @@ export class PaymentService {
               ? {
                   create: dto.khataAllocations.map((alloc) => ({
                     khataId: alloc.khataId,
-                    amount: new Prisma.Decimal(alloc.amount),
+                    amount: new Decimal(alloc.amount),
                     note: alloc.note?.trim() || null,
                   })),
                 }
@@ -274,7 +307,7 @@ export class PaymentService {
         },
       });
 
-      // অডিট লগ তৈরি
+      // অডিট লগ তৈরি (ট্রানজ্যাকশনের ভেতরে tx দিয়ে)
       await tx.auditLog.create({
         data: {
           userId,
@@ -284,9 +317,9 @@ export class PaymentService {
           details: {
             writerId: payment.writerId,
             writerName: writer.name,
-            amount: Number(payment.amount),
-            paidAmount: Number(payment.paidAmount),
-            dueAmount: Number(payment.dueAmount),
+            amount: payment.amount.toFixed(2),
+            paidAmount: payment.paidAmount.toFixed(2),
+            dueAmount: payment.dueAmount.toFixed(2),
             status: payment.status,
             paymentDate: payment.paymentDate,
             allocationsCount: payment.paymentItems.length,
@@ -405,7 +438,7 @@ export class PaymentService {
   }
 
   /**
-   * ৫. কিস্তিতে বকেয়া পরিশোধ (Add Payment / Installment)
+   * ৫. কিস্তিতে বকেয়া পরিশোধ (Add Payment / Installment) — Overpayment Guard সহ
    */
   static async addPayment(id: string, dto: AddPaymentDto, userId: string) {
     const payment = await prisma.payment.findUnique({
@@ -419,24 +452,24 @@ export class PaymentService {
       throw ApiError.notFound(`Payment record not found with ID: ${id}`);
     }
 
-    const currentDue = new Prisma.Decimal(payment.dueAmount);
+    const currentDue = new Decimal(payment.dueAmount);
 
     // পেমেন্ট ইতিমধ্যে সম্পূর্ণ পরিশোধিত কি না যাচাই
     if (payment.status === 'PAID' || currentDue.lte(0)) {
       throw ApiError.badRequest('This payment record is already fully PAID. No remaining due.');
     }
 
-    const additionalDec = new Prisma.Decimal(dto.additionalPaidAmount);
+    const additionalDec = new Decimal(dto.additionalPaidAmount);
 
-    // অতিরিক্ত পরিশোধ বর্তমান বকেয়ার বেশি হতে পারবে না
-    if (additionalDec.greaterThan(currentDue)) {
+    // Overpayment Guard: অতিরিক্ত পরিশোধ বর্তমান বকেয়ার বেশি হতে পারবে না
+    if (additionalDec.gt(currentDue)) {
       throw ApiError.badRequest(
-        `Additional payment (৳${additionalDec.toFixed(2)}) exceeds remaining due amount (৳${currentDue.toFixed(2)})`
+        `Overpayment rejected: Additional payment (৳${additionalDec.toFixed(2)}) exceeds remaining due amount (৳${currentDue.toFixed(2)})`
       );
     }
 
-    const currentPaid = new Prisma.Decimal(payment.paidAmount);
-    const totalAmount = new Prisma.Decimal(payment.amount);
+    const currentPaid = new Decimal(payment.paidAmount);
+    const totalAmount = new Decimal(payment.amount);
     const newPaid = currentPaid.plus(additionalDec);
     const newDue = totalAmount.minus(newPaid);
     const newStatus: PaymentStatus = newDue.isZero() ? 'PAID' : 'PARTIAL';
@@ -476,7 +509,7 @@ export class PaymentService {
         },
       });
 
-      // অডিট লগ তৈরি
+      // অডিট লগ তৈরি (একই ট্রানজ্যাকশনে tx দিয়ে)
       await tx.auditLog.create({
         data: {
           userId,
@@ -486,11 +519,11 @@ export class PaymentService {
           details: {
             writerId: updated.writerId,
             writerName: payment.writer.name,
-            previousPaidAmount: Number(payment.paidAmount),
-            additionalPaidAmount: Number(additionalDec),
-            newPaidAmount: Number(newPaid),
-            previousDueAmount: Number(payment.dueAmount),
-            newDueAmount: Number(newDue),
+            previousPaidAmount: payment.paidAmount.toFixed(2),
+            additionalPaidAmount: additionalDec.toFixed(2),
+            newPaidAmount: newPaid.toFixed(2),
+            previousDueAmount: payment.dueAmount.toFixed(2),
+            newDueAmount: newDue.toFixed(2),
             previousStatus: payment.status,
             newStatus,
           },
@@ -516,7 +549,7 @@ export class PaymentService {
       throw ApiError.notFound(`Writer not found with ID: ${writerId}`);
     }
 
-    const ratePerKhata = new Prisma.Decimal(writer.ratePerKhata);
+    const ratePerKhata = new Decimal(writer.ratePerKhata);
 
     // লেখকের সব COMPLETED খাতার তথ্য
     const completedKhatas = await prisma.khata.findMany({
@@ -533,21 +566,21 @@ export class PaymentService {
       orderBy: { paymentDate: 'desc' },
     });
 
-    let totalBilled = new Prisma.Decimal(0);
-    let totalPaid = new Prisma.Decimal(0);
+    let totalBilled = new Decimal(0);
+    let totalPaid = new Decimal(0);
     let paidCount = 0;
     let partialCount = 0;
     let dueCount = 0;
 
     for (const p of payments) {
-      totalBilled = totalBilled.plus(p.amount);
-      totalPaid = totalPaid.plus(p.paidAmount);
+      totalBilled = totalBilled.plus(new Decimal(p.amount));
+      totalPaid = totalPaid.plus(new Decimal(p.paidAmount));
       if (p.status === 'PAID') paidCount++;
       else if (p.status === 'PARTIAL') partialCount++;
       else if (p.status === 'DUE') dueCount++;
     }
 
-    const totalDue = Prisma.Decimal.max(0, totalEarned.minus(totalPaid));
+    const totalDue = Decimal.max(0, totalEarned.minus(totalPaid));
 
     return {
       writer: {
@@ -556,17 +589,17 @@ export class PaymentService {
         phone: writer.phone,
         email: writer.email,
         branch: writer.branch,
-        ratePerKhata: Number(ratePerKhata),
+        ratePerKhata: ratePerKhata.toFixed(2),
       },
       khataMetrics: {
         completedKhatasCount: completedKhatas.length,
         totalSubmittedQty,
       },
       financialMetrics: {
-        totalEarned: Number(totalEarned.toFixed(2)),
-        totalBilled: Number(totalBilled.toFixed(2)),
-        totalPaid: Number(totalPaid.toFixed(2)),
-        totalDue: Number(totalDue.toFixed(2)),
+        totalEarned: totalEarned.toFixed(2),
+        totalBilled: totalBilled.toFixed(2),
+        totalPaid: totalPaid.toFixed(2),
+        totalDue: totalDue.toFixed(2),
       },
       paymentCounts: {
         total: payments.length,
@@ -576,9 +609,9 @@ export class PaymentService {
       },
       recentPayments: payments.slice(0, 5).map((p) => ({
         id: p.id,
-        amount: Number(p.amount),
-        paidAmount: Number(p.paidAmount),
-        dueAmount: Number(p.dueAmount),
+        amount: new Decimal(p.amount).toFixed(2),
+        paidAmount: new Decimal(p.paidAmount).toFixed(2),
+        dueAmount: new Decimal(p.dueAmount).toFixed(2),
         status: p.status,
         paymentDate: p.paymentDate,
       })),

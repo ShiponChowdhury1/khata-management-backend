@@ -109,7 +109,7 @@ model Writer {
   district       String    @default("Dhaka") // লেখকের জেলা (যেমন: "Khulna", "Comilla", "Rajshahi")
   branchId       String
   branch         Branch    @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  ratePerKhata   Decimal   @db.Decimal(10, 2) // প্রতি খাতা লেখার নির্ধারিত রেট
+  ratePerKhata   Decimal   @db.Decimal(12, 2) // প্রতি খাতা লেখার নির্ধারিত রেট
   isActive       Boolean   @default(true)
   khatas         Khata[]
   payments       Payment[]
@@ -163,9 +163,9 @@ model Payment {
   writer       Writer        @relation(fields: [writerId], references: [id], onDelete: Restrict)
   khataId      String?       // সিঙ্গেল খাতার পেমেন্ট হলে সরাসরি লিংক (ঐচ্ছিক)
   khata        Khata?        @relation(fields: [khataId], references: [id], onDelete: SetNull)
-  amount       Decimal       @db.Decimal(10, 2) // মোট বিল বা নির্ধারণকৃত প্রদেয় পরিমাণ
-  paidAmount   Decimal       @default(0.00) @db.Decimal(10, 2) // কত টাকা পরিশোধ করা হয়েছে
-  dueAmount    Decimal       @db.Decimal(10, 2) // বাকি পরিমাণ (amount - paidAmount)
+  amount       Decimal       @db.Decimal(12, 2) // মোট বিল বা নির্ধারণকৃত প্রদেয় পরিমাণ
+  paidAmount   Decimal       @default(0.00) @db.Decimal(12, 2) // কত টাকা পরিশোধ করা হয়েছে
+  dueAmount    Decimal       @db.Decimal(12, 2) // বাকি পরিমাণ (amount - paidAmount)
   status       PaymentStatus @default(DUE)
   paymentDate  DateTime      @default(now())
   paymentItems PaymentItem[] // একটি পেমেন্ট একাধিক খাতায় বণ্টন হলে তার ব্রেকডাউন (Optional Junction)
@@ -187,7 +187,7 @@ model PaymentItem {
   payment   Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   khataId   String
   khata     Khata    @relation(fields: [khataId], references: [id], onDelete: Restrict)
-  amount    Decimal  @db.Decimal(10, 2) // এই নির্দিষ্ট খাতার জন্য কত টাকা দেওয়া হলো
+  amount    Decimal  @db.Decimal(12, 2) // এই নির্দিষ্ট খাতার জন্য কত টাকা দেওয়া হলো
   note      String?
   createdAt DateTime @default(now())
 
@@ -237,19 +237,50 @@ model AuditLog {
   @@map("audit_logs")
 }
 
-// ৮. SubjectPricing মডেল — বিভিন্ন শ্রেণি ও বিষয়ের খাতার নির্ধারিত মূল্য তালিকা
-model SubjectPricing {
-  id            String   @id @default(uuid())
-  subjectName   String   // বিষয় (যেমন: "Physics", "Chemistry", "Biology")
-  className     String   // শ্রেণি (যেমন: "SSC", "HSC", "JSC")
-  pricePerKhata Decimal  @db.Decimal(10, 2) // প্রতি খাতার নির্ধারিত মূল্য
-  isActive      Boolean  @default(true)
-  orders        Order[]
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+// ৮.১ AcademicClass মডেল — শ্রেণি ব্যবস্থাপনা (যেমন: "JSC", "SSC", "HSC")
+model AcademicClass {
+  id              String           @id @default(uuid())
+  name            String
+  displayOrder    Int              @default(0)
+  isActive        Boolean          @default(true)
+  subjectPricings SubjectPricing[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
-  @@unique([subjectName, className])
-  @@index([className])
+  @@index([displayOrder])
+  @@index([isActive])
+  @@map("academic_classes")
+}
+
+// ৮.২ Subject মডেল — বিষয় ব্যবস্থাপনা (যেমন: "Physics", "Chemistry", "Biology")
+model Subject {
+  id              String           @id @default(uuid())
+  name            String
+  isActive        Boolean          @default(true)
+  subjectPricings SubjectPricing[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([isActive])
+  @@map("subjects")
+}
+
+// ৮.৩ SubjectPricing মডেল — বিভিন্ন শ্রেণি ও বিষয়ের খাতার নির্ধারিত মূল্য তালিকা
+model SubjectPricing {
+  id            String        @id @default(uuid())
+  classId       String
+  class         AcademicClass @relation(fields: [classId], references: [id], onDelete: Restrict)
+  subjectId     String
+  subject       Subject       @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+  pricePerKhata Decimal       @db.Decimal(12, 2) // প্রতি খাতার নির্ধারিত মূল্য
+  isActive      Boolean       @default(true)
+  orders        Order[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@unique([classId, subjectId])
+  @@index([classId])
+  @@index([subjectId])
   @@index([isActive])
   @@map("subject_pricings")
 }
@@ -264,8 +295,8 @@ model Order {
   subjectPricingId   String
   subjectPricing     SubjectPricing     @relation(fields: [subjectPricingId], references: [id], onDelete: Restrict)
   quantity           Int                // মোট খাতার সংখ্যা (যেমন: ১০০)
-  unitPrice          Decimal            @db.Decimal(10, 2) // অর্ডারের সময় নির্ধারিত মূল্যের স্ন্যাপশট
-  totalAmount        Decimal            @db.Decimal(10, 2) // মোট প্রদেয় মূল্য (quantity * unitPrice)
+  unitPrice          Decimal            @db.Decimal(12, 2) // অর্ডারের সময় নির্ধারিত মূল্যের স্ন্যাপশট
+  totalAmount        Decimal            @db.Decimal(12, 2) // মোট প্রদেয় মূল্য (quantity * unitPrice)
   preferredDistrict  String?            // স্টুডেন্টের পছন্দের জেলা (যেমন: "Khulna")
   preferredWriterId  String?            // স্টুডেন্টের নির্দিষ্ট পছন্দের লেখক (ঐচ্ছিক)
   preferredWriter    Writer?            @relation("PreferredWriterOrders", fields: [preferredWriterId], references: [id], onDelete: SetNull)

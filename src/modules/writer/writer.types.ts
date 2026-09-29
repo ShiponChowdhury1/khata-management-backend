@@ -6,6 +6,8 @@ import { BANGLADESH_DISTRICTS } from '../../constants/districts.js';
  * Zod ভ্যালিডেশন স্কিমাস
  */
 
+import { positiveMoneySchema } from '../../utils/money.js';
+
 // নতুন লেখক (Writer) তৈরির ভ্যালিডেশন স্কিমা
 export const createWriterSchema = z.object({
   name: z
@@ -27,9 +29,7 @@ export const createWriterSchema = z.object({
     message: 'Invalid district. Please provide a valid district in Bangladesh.',
   }).default('Dhaka'),
   branchId: z.string().uuid('Invalid branch ID format (must be UUID)'),
-  ratePerKhata: z.coerce
-    .number()
-    .positive('Rate per khata must be greater than 0'),
+  ratePerKhata: positiveMoneySchema('Rate per khata must be positive with at most 2 decimal places'),
 });
 
 // লেখক তথ্য আপডেটের ভ্যালিডেশন স্কিমা
@@ -51,10 +51,7 @@ export const updateWriterSchema = z
       message: 'Invalid district. Please provide a valid district in Bangladesh.',
     }).optional(),
     branchId: z.string().uuid('Invalid branch ID format (must be UUID)').optional(),
-    ratePerKhata: z.coerce
-      .number()
-      .positive('Rate per khata must be greater than 0')
-      .optional(),
+    ratePerKhata: positiveMoneySchema('Rate per khata must be positive with at most 2 decimal places').optional(),
     isActive: z.boolean().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
@@ -157,9 +154,9 @@ export interface WriterKhataSummary {
 }
 
 export interface WriterPaymentSummary {
-  totalBillAmount: number;
-  totalPaidAmount: number;
-  totalDueAmount: number;
+  totalBillAmount: string;
+  totalPaidAmount: string;
+  totalDueAmount: string;
   byStatus: {
     paid: number;
     partial: number;
@@ -173,7 +170,7 @@ export interface WriterDetails {
   phone: string;
   email: string | null;
   district: string;
-  ratePerKhata: number;
+  ratePerKhata: string;
   isActive: boolean;
   branch: {
     id: string;

@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import bcrypt from 'bcryptjs';
-import { prisma } from '../src/lib/prisma.js';
+import { prisma, Decimal } from '../src/lib/prisma.js';
 
 async function main() {
   console.log('🌱 Starting database seeding for Khata Management System...\n');
@@ -12,6 +12,8 @@ async function main() {
   await prisma.khata.deleteMany();
   await prisma.order.deleteMany();
   await prisma.subjectPricing.deleteMany();
+  await prisma.academicClass.deleteMany();
+  await prisma.subject.deleteMany();
   await prisma.stock.deleteMany();
   await prisma.writer.deleteMany();
   await prisma.branch.deleteMany();
@@ -150,7 +152,7 @@ async function main() {
       email: 'tanvir.writer@gmail.com',
       district: 'Dhaka',
       branchId: branchDhaka.id,
-      ratePerKhata: 25.0,
+      ratePerKhata: new Decimal('25.00'),
       isActive: true,
     },
   });
@@ -162,7 +164,7 @@ async function main() {
       email: 'sadia.writer@gmail.com',
       district: 'Dhaka',
       branchId: branchMirpur.id,
-      ratePerKhata: 22.0,
+      ratePerKhata: new Decimal('22.00'),
       isActive: true,
     },
   });
@@ -174,7 +176,7 @@ async function main() {
       email: 'rakib.writer@gmail.com',
       district: 'Dhaka',
       branchId: branchUttara.id,
-      ratePerKhata: 20.0,
+      ratePerKhata: new Decimal('20.00'),
       isActive: true,
     },
   });
@@ -186,7 +188,7 @@ async function main() {
       email: 'nusrat.writer@gmail.com',
       district: 'Chattogram',
       branchId: branchChattogram.id,
-      ratePerKhata: 24.0,
+      ratePerKhata: new Decimal('24.00'),
       isActive: true,
     },
   });
@@ -198,7 +200,7 @@ async function main() {
       email: 'arif.writer@gmail.com',
       district: 'Rajshahi',
       branchId: branchRajshahi.id,
-      ratePerKhata: 20.0,
+      ratePerKhata: new Decimal('20.00'),
       isActive: true,
     },
   });
@@ -210,7 +212,7 @@ async function main() {
       email: 'khadija.writer@gmail.com',
       district: 'Khulna',
       branchId: branchKhulna.id,
-      ratePerKhata: 22.0,
+      ratePerKhata: new Decimal('22.00'),
       isActive: true,
     },
   });
@@ -222,7 +224,7 @@ async function main() {
       email: 'mahfuz.writer@gmail.com',
       district: 'Sylhet',
       branchId: branchSylhet.id,
-      ratePerKhata: 25.0,
+      ratePerKhata: new Decimal('25.00'),
       isActive: true,
     },
   });
@@ -234,7 +236,7 @@ async function main() {
       email: 'shamim.writer@gmail.com',
       district: 'Bogura',
       branchId: branchRajshahi.id,
-      ratePerKhata: 18.0,
+      ratePerKhata: new Decimal('18.00'),
       isActive: true,
     },
   });
@@ -352,98 +354,148 @@ async function main() {
   });
   console.log('✅ Stocks seeded successfully.\n');
 
-  // ৬. সাবজেক্ট প্রাইসিং তৈরি
+  // ৬. ক্লাস, সাবজেক্ট ও সাবজেক্ট প্রাইসিং তৈরি
+  console.log('🏫 Seeding Academic Classes...');
+  const classJSC = await prisma.academicClass.create({
+    data: {
+      name: 'JSC',
+      displayOrder: 1,
+      isActive: true,
+    },
+  });
+
+  const classSSC = await prisma.academicClass.create({
+    data: {
+      name: 'SSC',
+      displayOrder: 2,
+      isActive: true,
+    },
+  });
+
+  const classHSC = await prisma.academicClass.create({
+    data: {
+      name: 'HSC',
+      displayOrder: 3,
+      isActive: true,
+    },
+  });
+
+  console.log('📖 Seeding Subjects...');
+  const subPhysics = await prisma.subject.create({
+    data: { name: 'Physics', isActive: true },
+  });
+
+  const subChemistry = await prisma.subject.create({
+    data: { name: 'Chemistry', isActive: true },
+  });
+
+  const subBiology = await prisma.subject.create({
+    data: { name: 'Biology', isActive: true },
+  });
+
+  const subHigherMath = await prisma.subject.create({
+    data: { name: 'Higher Mathematics', isActive: true },
+  });
+
+  const subScience = await prisma.subject.create({
+    data: { name: 'General Science', isActive: true },
+  });
+
+  const subICT = await prisma.subject.create({
+    data: { name: 'ICT', isActive: true },
+  });
+
   console.log('📚 Seeding Subject Pricing...');
   const pricingPhysicsHSC = await prisma.subjectPricing.create({
     data: {
-      subjectName: 'Physics',
-      className: 'HSC',
-      pricePerKhata: 120.0,
+      classId: classHSC.id,
+      subjectId: subPhysics.id,
+      pricePerKhata: new Decimal('120.00'),
       isActive: true,
     },
   });
 
   const pricingChemistryHSC = await prisma.subjectPricing.create({
     data: {
-      subjectName: 'Chemistry',
-      className: 'HSC',
-      pricePerKhata: 120.0,
+      classId: classHSC.id,
+      subjectId: subChemistry.id,
+      pricePerKhata: new Decimal('120.00'),
       isActive: true,
     },
   });
 
   const pricingBiologyHSC = await prisma.subjectPricing.create({
     data: {
-      subjectName: 'Biology',
-      className: 'HSC',
-      pricePerKhata: 130.0,
+      classId: classHSC.id,
+      subjectId: subBiology.id,
+      pricePerKhata: new Decimal('130.00'),
       isActive: true,
     },
   });
 
   const pricingMathHSC = await prisma.subjectPricing.create({
     data: {
-      subjectName: 'Higher Mathematics',
-      className: 'HSC',
-      pricePerKhata: 110.0,
+      classId: classHSC.id,
+      subjectId: subHigherMath.id,
+      pricePerKhata: new Decimal('110.00'),
       isActive: true,
     },
   });
 
   const pricingPhysicsSSC = await prisma.subjectPricing.create({
     data: {
-      subjectName: 'Physics',
-      className: 'SSC',
-      pricePerKhata: 90.0,
+      classId: classSSC.id,
+      subjectId: subPhysics.id,
+      pricePerKhata: new Decimal('90.00'),
       isActive: true,
     },
   });
 
   const pricingChemistrySSC = await prisma.subjectPricing.create({
     data: {
-      subjectName: 'Chemistry',
-      className: 'SSC',
-      pricePerKhata: 90.0,
+      classId: classSSC.id,
+      subjectId: subChemistry.id,
+      pricePerKhata: new Decimal('90.00'),
       isActive: true,
     },
   });
 
   const pricingBiologySSC = await prisma.subjectPricing.create({
     data: {
-      subjectName: 'Biology',
-      className: 'SSC',
-      pricePerKhata: 95.0,
+      classId: classSSC.id,
+      subjectId: subBiology.id,
+      pricePerKhata: new Decimal('95.00'),
       isActive: true,
     },
   });
 
   const pricingMathSSC = await prisma.subjectPricing.create({
     data: {
-      subjectName: 'Higher Mathematics',
-      className: 'SSC',
-      pricePerKhata: 85.0,
+      classId: classSSC.id,
+      subjectId: subHigherMath.id,
+      pricePerKhata: new Decimal('85.00'),
       isActive: true,
     },
   });
 
   const pricingScienceJSC = await prisma.subjectPricing.create({
     data: {
-      subjectName: 'General Science',
-      className: 'JSC',
-      pricePerKhata: 75.0,
+      classId: classJSC.id,
+      subjectId: subScience.id,
+      pricePerKhata: new Decimal('75.00'),
       isActive: true,
     },
   });
 
   const pricingICTHSC = await prisma.subjectPricing.create({
     data: {
-      subjectName: 'ICT',
-      className: 'HSC',
-      pricePerKhata: 100.0,
+      classId: classHSC.id,
+      subjectId: subICT.id,
+      pricePerKhata: new Decimal('100.00'),
       isActive: true,
     },
   });
-  console.log('✅ Subject Pricing seeded successfully.\n');
+  console.log('✅ Academic Classes, Subjects & Pricing seeded successfully.\n');
 
   // ৭. খাতা তৈরি (Khatas - General Batches)
   console.log('📝 Seeding Khatas...');
@@ -552,9 +604,9 @@ async function main() {
     data: {
       writerId: writer1.id,
       khataId: khata1.id,
-      amount: 2500.0,
-      paidAmount: 2500.0,
-      dueAmount: 0.0,
+      amount: new Decimal('2500.00'),
+      paidAmount: new Decimal('2500.00'),
+      dueAmount: new Decimal('0.00'),
       status: 'PAID',
       paymentDate: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
     },
@@ -564,7 +616,7 @@ async function main() {
     data: {
       paymentId: payment1.id,
       khataId: khata1.id,
-      amount: 2500.0,
+      amount: new Decimal('2500.00'),
       note: 'Full settlement for BATCH-2026-001 (100 khatas)',
     },
   });
@@ -574,9 +626,9 @@ async function main() {
     data: {
       writerId: writer2.id,
       khataId: khata3.id,
-      amount: 2640.0,
-      paidAmount: 2640.0,
-      dueAmount: 0.0,
+      amount: new Decimal('2640.00'),
+      paidAmount: new Decimal('2640.00'),
+      dueAmount: new Decimal('0.00'),
       status: 'PAID',
       paymentDate: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
     },
@@ -586,7 +638,7 @@ async function main() {
     data: {
       paymentId: payment2.id,
       khataId: khata3.id,
-      amount: 2640.0,
+      amount: new Decimal('2640.00'),
       note: 'Full payment for BATCH-2026-003 (120 khatas)',
     },
   });
@@ -596,9 +648,9 @@ async function main() {
     data: {
       writerId: writer1.id,
       khataId: khata2.id,
-      amount: 1000.0,
-      paidAmount: 600.0,
-      dueAmount: 400.0,
+      amount: new Decimal('1000.00'),
+      paidAmount: new Decimal('600.00'),
+      dueAmount: new Decimal('400.00'),
       status: 'PARTIAL',
       paymentDate: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
     },
@@ -608,7 +660,7 @@ async function main() {
     data: {
       paymentId: payment3.id,
       khataId: khata2.id,
-      amount: 600.0,
+      amount: new Decimal('600.00'),
       note: 'Partial advance against 40 submitted khatas',
     },
   });
@@ -618,9 +670,9 @@ async function main() {
     data: {
       writerId: writer4.id,
       khataId: khata5.id,
-      amount: 2160.0,
-      paidAmount: 0.0,
-      dueAmount: 2160.0,
+      amount: new Decimal('2160.00'),
+      paidAmount: new Decimal('0.00'),
+      dueAmount: new Decimal('2160.00'),
       status: 'DUE',
       paymentDate: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
     },
@@ -631,9 +683,9 @@ async function main() {
     data: {
       writerId: writer5.id,
       khataId: khata6.id,
-      amount: 1500.0,
-      paidAmount: 1500.0,
-      dueAmount: 0.0,
+      amount: new Decimal('1500.00'),
+      paidAmount: new Decimal('1500.00'),
+      dueAmount: new Decimal('0.00'),
       status: 'PAID',
       paymentDate: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000),
     },
@@ -643,7 +695,7 @@ async function main() {
     data: {
       paymentId: payment5.id,
       khataId: khata6.id,
-      amount: 1500.0,
+      amount: new Decimal('1500.00'),
       note: 'Full settlement for BATCH-2026-006',
     },
   });
@@ -661,8 +713,8 @@ async function main() {
       customerAddress: 'House 14, Road 5, Dhanmondi, Dhaka',
       subjectPricingId: pricingPhysicsHSC.id,
       quantity: 1,
-      unitPrice: 120.0,
-      totalAmount: 120.0,
+      unitPrice: new Decimal('120.00'),
+      totalAmount: new Decimal('120.00'),
       preferredDistrict: 'Dhaka',
       preferredWriterId: writer1.id,
       status: 'DELIVERED',
@@ -699,8 +751,8 @@ async function main() {
       customerAddress: 'Nasirabad Housing Society, Chattogram',
       subjectPricingId: pricingChemistryHSC.id,
       quantity: 5,
-      unitPrice: 120.0,
-      totalAmount: 600.0,
+      unitPrice: new Decimal('120.00'),
+      totalAmount: new Decimal('600.00'),
       preferredDistrict: 'Chattogram',
       status: 'OUT_FOR_DELIVERY',
       paymentStatus: 'PENDING',
@@ -734,8 +786,8 @@ async function main() {
       customerAddress: 'Kazihata Main Road, Rajshahi',
       subjectPricingId: pricingMathHSC.id,
       quantity: 2,
-      unitPrice: 110.0,
-      totalAmount: 220.0,
+      unitPrice: new Decimal('110.00'),
+      totalAmount: new Decimal('220.00'),
       preferredDistrict: 'Rajshahi',
       status: 'IN_PROGRESS',
       paymentStatus: 'PENDING',
@@ -767,8 +819,8 @@ async function main() {
       customerAddress: 'Boyra Main Road, Khulna',
       subjectPricingId: pricingBiologyHSC.id,
       quantity: 4,
-      unitPrice: 130.0,
-      totalAmount: 520.0,
+      unitPrice: new Decimal('130.00'),
+      totalAmount: new Decimal('520.00'),
       preferredDistrict: 'Khulna',
       status: 'ASSIGNED',
       paymentStatus: 'PENDING',
@@ -815,8 +867,8 @@ async function main() {
       customerAddress: 'Sector 11, Uttara, Dhaka',
       subjectPricingId: pricingPhysicsSSC.id,
       quantity: 1,
-      unitPrice: 90.0,
-      totalAmount: 90.0,
+      unitPrice: new Decimal('90.00'),
+      totalAmount: new Decimal('90.00'),
       preferredDistrict: 'Dhaka',
       status: 'CONFIRMED',
       paymentStatus: 'PENDING',
@@ -834,8 +886,8 @@ async function main() {
       customerAddress: 'Mirpur 1, Dhaka',
       subjectPricingId: pricingChemistrySSC.id,
       quantity: 3,
-      unitPrice: 90.0,
-      totalAmount: 270.0,
+      unitPrice: new Decimal('90.00'),
+      totalAmount: new Decimal('270.00'),
       preferredDistrict: 'Dhaka',
       status: 'PENDING',
       paymentStatus: 'PENDING',
@@ -852,8 +904,8 @@ async function main() {
       customerAddress: 'Chawkbazar, Chattogram',
       subjectPricingId: pricingMathSSC.id,
       quantity: 2,
-      unitPrice: 85.0,
-      totalAmount: 170.0,
+      unitPrice: new Decimal('85.00'),
+      totalAmount: new Decimal('170.00'),
       preferredDistrict: 'Chattogram',
       status: 'CANCELLED',
       paymentStatus: 'PENDING',
